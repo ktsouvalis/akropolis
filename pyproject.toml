@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "akropolis"
-version = "0.5.0"
+version = "0.6.0"
 description = "Provision and monitor a 3-node Authentik HA cluster (Patroni/etcd/HAProxy/nginx/keepalived)"
 readme = "README.md"
 requires-python = ">=3.10"

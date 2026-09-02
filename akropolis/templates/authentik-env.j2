@@ -1,0 +1,25 @@
+# Managed by akropolis — do not edit by hand (changes are overwritten on replay)
+AUTHENTIK_TAG={{ tag }}
+
+AUTHENTIK_POSTGRESQL__HOST=127.0.0.1
+AUTHENTIK_POSTGRESQL__PORT=5000
+AUTHENTIK_POSTGRESQL__NAME=authentik
+AUTHENTIK_POSTGRESQL__USER=authentik
+AUTHENTIK_POSTGRESQL__PASSWORD={{ db_password }}
+
+AUTHENTIK_SECRET_KEY={{ secret_key }}
+
+# REQUIRED for network_mode: host where HAProxy occupies port 9000 —
+# without these the Go router silently fails to bind and internal APIs 503.
+AUTHENTIK_LISTEN__HTTP=0.0.0.0:9080
+AUTHENTIK_LISTEN__HTTPS=0.0.0.0:9443
+AUTHENTIK_LISTEN__METRICS=0.0.0.0:9300
+
+AUTHENTIK_ERROR_REPORTING__ENABLED=false
+
+# Consumed once on first migration: creates akadmin + API token.
+AUTHENTIK_BOOTSTRAP_PASSWORD={{ bootstrap_password }}
+AUTHENTIK_BOOTSTRAP_TOKEN={{ bootstrap_token }}
+{% if bootstrap_email %}
+AUTHENTIK_BOOTSTRAP_EMAIL={{ bootstrap_email }}
+{% endif %}

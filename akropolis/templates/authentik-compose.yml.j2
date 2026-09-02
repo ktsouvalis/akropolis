@@ -1,0 +1,45 @@
+services:
+  server:
+    depends_on:
+      worker:
+        condition: service_healthy
+    command: server
+    image: ghcr.io/goauthentik/server:${AUTHENTIK_TAG}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request,ssl,sys; ctx=ssl.create_default_context(); ctx.check_hostname=False; ctx.verify_mode=ssl.CERT_NONE; sys.exit(0) if urllib.request.urlopen('https://localhost:9443/-/health/live/', timeout=5, context=ctx).status == 200 else sys.exit(1)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    env_file:
+      - .env
+    volumes:
+      - /opt/authentik/data:/media
+      - /opt/authentik/custom-templates:/templates
+{% for v in extra_server_volumes %}
+      - {{ v }}
+{% endfor %}
+    network_mode: host
+
+  worker:
+    command: worker
+    image: ghcr.io/goauthentik/server:${AUTHENTIK_TAG}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request,sys; sys.exit(0) if urllib.request.urlopen('http://localhost:9080/-/health/live/', timeout=5).status == 200 else sys.exit(1)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    user: root
+    env_file:
+      - .env
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /opt/authentik/data:/media
+      - /opt/authentik/certs:/certs
+{% for v in extra_worker_volumes %}
+      - {{ v }}
+{% endfor %}
+    network_mode: host

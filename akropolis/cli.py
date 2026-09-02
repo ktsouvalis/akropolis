@@ -18,6 +18,7 @@ from . import __version__
 from .config import ConfigError, load
 from .init_wizard import run_wizard
 from .phases.base import PhaseContext, StubPhase, run_phases
+from .phases.authentik_phase import AuthentikPhase
 from .phases.base_setup import BasePhase
 from .phases.etcd_phase import EtcdPhase
 from .phases.haproxy_phase import HAProxyPhase
@@ -30,7 +31,7 @@ from .state import State
 
 console = Console()
 
-# Ordered phase pipeline. Implemented: all except authentik + handoff.
+# Ordered phase pipeline. Implemented: all except handoff.
 # The stubs make the intended shape visible and stop the runner cleanly.
 PIPELINE = [
     PreflightPhase(),
@@ -40,7 +41,7 @@ PIPELINE = [
     HAProxyPhase(),
     TLSPhase(),
     NginxKeepalivedPhase(),
-    StubPhase("authentik"),
+    AuthentikPhase(),
     StubPhase("handoff"),     # emit monitor config, print admin URL
 ]
 

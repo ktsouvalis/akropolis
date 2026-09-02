@@ -21,7 +21,7 @@ Client → VIP (keepalived/VRRP) → nginx on MASTER node → any of 3 Authentik
 | HAProxy | Docker, `network_mode: host` | per-node PG router: `127.0.0.1:5000` always reaches the current leader |
 | nginx | Docker, `network_mode: host` | TLS termination + load balancing across Authentik backends |
 | keepalived | bare-metal systemd | VRRP virtual IP with health-tracked failover |
-| Authentik | Docker, `network_mode: host` | the identity provider itself *(phase pending)* |
+| Authentik | Docker, `network_mode: host` | the identity provider itself |
 
 No Redis: Authentik ≥ 2025.10 keeps sessions, cache, tasks, and WebSocket state in PostgreSQL.
 
@@ -33,7 +33,8 @@ No Redis: Authentik ≥ 2025.10 keeps sessions, cache, tasks, and WebSocket stat
 | base / etcd / patroni / haproxy | ✅ implemented (not yet exercised against real hosts) |
 | tls — `none` / `self_signed` / `acme` (staging) / `import` | ✅ implemented, tested |
 | nginx-keepalived (incl. ACME finalization) | ✅ implemented (configs validated with real `nginx -t` / `keepalived -t`) |
-| authentik / handoff | 🚧 stubs |
+| authentik | ✅ implemented (compose mirrors the production file verbatim) |
+| handoff | 🚧 stub |
 | `akropolis monitor` | 🚧 stub (will fold in ak-monitor) |
 
 ## Install
@@ -201,6 +202,20 @@ Guide Step 6, with the field learnings applied over the first-draft values. Orde
 
 Verify: every node's `/monitor` returns its own identity and `stub_status` answers; **exactly one** node holds the VIP on the configured interface; the VIP itself answers `/monitor`. A live failover test (stop nginx on the VIP holder, watch `/monitor` change identity within seconds) is deliberately left as a manual exercise — akropolis will not kill services to prove a point.
 
+### authentik
+
+Guide Step 7. Two execution paths, chosen by inspecting what actually runs, never by assumption:
+
+**Bootstrap** (first deployment): `.env` and compose are rendered on all nodes, but only the bootstrap leader starts — alone — and the phase gates on both its containers reaching Docker-`healthy`, a window that covers the image pull and the full database migration run (budget 15 min). Only then do the other two nodes start, one at a time, each health-gated; they find a migrated schema and come up clean. Three nodes racing migrations against one database is exactly the class of multi-node trouble this cluster has already met once — so it is structurally prevented, not hoped away.
+
+**Rolling** (config or tag change on a running cluster): applied node-3 → node-2 → node-1 — the reverse-order change pattern used in production — with `down && up -d` per node (never `restart`) and a health gate before moving on. Nodes with unchanged config are skipped; a node that fails its gate stops the phase while the remaining nodes are still serving.
+
+The compose file mirrors the production one verbatim: `depends_on: worker: condition: service_healthy` (the 2026.5.0 dual-port-bind race), python3/urllib healthchecks with `start_period: 60s` (the image dropped `curl` in 2026.5.6), the worker as root with the docker socket for outpost management, and `network_mode: host`. Site-specific mounts (branding, locale patches) are not hardcoded — add them via `authentik.extra_server_volumes` / `authentik.extra_worker_volumes`.
+
+The `.env` carries the non-negotiables for this architecture: `AUTHENTIK_POSTGRESQL__HOST=127.0.0.1` (each node talks to its local HAProxy, never a node IP — the lesson of a past incident), and `AUTHENTIK_LISTEN__HTTP/HTTPS/METRICS` moved to 9080/9443/9300 because HAProxy owns 9000 and without the overrides the Go router silently fails to bind while everything looks alive. `AUTHENTIK_SECRET_KEY` (identical everywhere), the akadmin bootstrap password, and the bootstrap API token are generated once and pinned in state; the token is consumed by Authentik's first migration to create akadmin's API credentials, and later handed to the monitor.
+
+Verify: both containers `healthy` on every node, `/-/health/ready/` answers per node, and the API responds to the pinned bootstrap token — proving now the exact credential the monitor will depend on later.
+
 ## State file & secrets
 
 Each site gets a JSON state file (default `.state/<site>.json`, mode 0600) recording phase completion and **pinned generate-once values**: the etcd initial-cluster token, all PostgreSQL passwords, the HAProxy stats password, TLS metadata. Pinning is what makes re-runs safe — a completed bootstrap can never be re-bootstrapped, and a re-render can never rotate a password out from under a running cluster. The state file refuses to load for a different site name than the one it was created for.
@@ -214,7 +229,7 @@ Security posture, stated plainly:
 
 ## Roadmap
 
-authentik phase (secret key, first-node migrations, bootstrap admin + API token) → handoff (emit the monitor's config, print the admin URL) → fold in the monitoring TUI as `akropolis monitor` → encrypted state secrets → Greek edition of this guide.
+handoff (emit the monitor's config, print the admin URL) → fold in the monitoring TUI as `akropolis monitor` → encrypted state secrets → Greek edition of this guide.
 
 ## License
 
