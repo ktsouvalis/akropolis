@@ -1,31 +1,208 @@
 # akropolis
 
-Provision and monitor a 3-node Authentik HA cluster
-(PostgreSQL/Patroni + etcd + HAProxy + nginx + keepalived), following the
-UoP Digital Governance Unit implementation guide.
+Provision and monitor a highly-available 3-node [Authentik](https://goauthentik.io) cluster over SSH.
 
-## Quick start
+akropolis turns three fresh Ubuntu 24.04 VMs into a production-grade Authentik identity provider cluster — PostgreSQL 16 with Patroni auto-failover over etcd, per-node HAProxy connection routing, nginx TLS termination, and a keepalived VRRP virtual IP — following the implementation guide developed and battle-tested at the Digital Governance Unit of the University of Peloponnese. It runs from your workstation, needs nothing installed on the nodes beforehand, and ends by emitting a ready-to-use config for its monitoring companion.
 
-```bash
-pip install -e .
-akropolis init                        # wizard → config.<site>.yml
-akropolis provision config.<site>.yml # resumable phase pipeline
-akropolis provision config.<site>.yml --only preflight   # read-only, safe anywhere
+Certificates from any source: self-signed, any ACME CA (Let's Encrypt, HARICA ACME, ...), or externally issued files (e.g. the HARICA portal flow used across the Greek public sector).
+
+## Architecture deployed
+
+```
+Client → VIP (keepalived/VRRP) → nginx on MASTER node → any of 3 Authentik backends (:9443)
+                                                          → Authentik → HAProxy (127.0.0.1:5000) → Patroni leader
+                                                          → (cache / sessions / tasks / channels all in PostgreSQL)
 ```
 
-## Status (v0.1)
+| Component | How it runs | Purpose |
+|---|---|---|
+| PostgreSQL 16 + Patroni | bare-metal systemd | HA database with automatic failover |
+| etcd v3.5 | Docker, `network_mode: host` | DCS: Patroni's distributed lock + config store |
+| HAProxy | Docker, `network_mode: host` | per-node PG router: `127.0.0.1:5000` always reaches the current leader |
+| nginx | Docker, `network_mode: host` | TLS termination + load balancing across Authentik backends *(phase pending)* |
+| keepalived | bare-metal systemd | VRRP virtual IP with health-tracked failover *(phase pending)* |
+| Authentik | Docker, `network_mode: host` | the identity provider itself *(phase pending)* |
 
-| phase            | status |
-|------------------|--------|
-| preflight        | ✅ implemented (read-only) |
-| base / etcd / patroni / haproxy | ✅ implemented (untested against real hosts yet) |
-| tls (none / self_signed / acme-staging / import) | ✅ implemented, tested |
+No Redis: Authentik ≥ 2025.10 keeps sessions, cache, tasks, and WebSocket state in PostgreSQL.
+
+## Status
+
+| Phase | Status |
+|---|---|
+| preflight | ✅ implemented (read-only) |
+| base / etcd / patroni / haproxy | ✅ implemented (not yet exercised against real hosts) |
+| tls — `none` / `self_signed` / `acme` (staging) / `import` | ✅ implemented, tested |
 | acme finalization / nginx-keepalived / authentik / handoff | 🚧 stubs |
+| `akropolis monitor` | 🚧 stub (will fold in ak-monitor) |
 
-TLS providers planned: `none` (testing only, refused in production),
-`self_signed`, `acme` (any directory URL — LE, HARICA ACME, ...), `import`
-(externally issued, e.g. HARICA portal — validated, distributed, expiry handed
-to the monitor).
+## Install
 
-Secrets are never stored in the site config. State lives in `.state/<site>.json`
-(git-ignore it; contains pinned generated values).
+```bash
+git clone https://github.com/ktsouvalis/akropolis.git
+cd akropolis
+python3 -m venv .venv            # Debian/Ubuntu/Mint: apt install python3-venv if missing
+.venv/bin/pip install -e .
+.venv/bin/akropolis --version
+```
+
+Requirements on the **workstation**: Python ≥ 3.10, SSH access to the nodes.
+Requirements on the **nodes**: fresh Ubuntu 24.04, a root-capable SSH user, correct interface MTU (1400 on VXLAN overlays, 1500 on flat L2). Everything else is akropolis's job.
+
+## Quickstart
+
+```bash
+# 1. answer questions once; they are materialized into a reviewable file
+.venv/bin/akropolis init                          # → config.<site>.yml
+
+# 2. read the file. really. this is the review-before-touching-anything step.
+
+# 3. read-only validation of the nodes — safe to run anywhere, changes nothing
+.venv/bin/akropolis provision config.<site>.yml --only preflight
+
+# 4. the full pipeline (resumable; each phase asks before applying)
+.venv/bin/akropolis provision config.<site>.yml
+```
+
+## Commands
+
+```
+akropolis init [-o FILE]            interactive wizard → writes config.<site>.yml
+akropolis provision CONFIG          run the phase pipeline (resumable)
+akropolis provision CONFIG --only PHASE [PHASE...]     run only named phases
+akropolis provision CONFIG --replay PHASE [PHASE...]   re-run completed phases
+akropolis monitor CONFIG            (stub) will run the monitoring TUI
+```
+
+## The phase model
+
+Every phase runs **plan → confirm → apply → verify**:
+
+- **plan** prints exactly what apply will do, before anything happens.
+- **confirm** — `lab` sites ask `y/N`; `production` sites require typing the site name. Read-only phases (preflight) skip confirmation. Declining stops the pipeline cleanly.
+- **apply** does the work, streaming per-node ✔/✘/⚠ check lines.
+- **verify** is a health gate. A phase that applies but fails verify is marked `failed` and **the runner stops** — it never builds on an unhealthy foundation.
+
+Progress is recorded in a per-site state file (see below), so a re-run skips completed phases and resumes at the frontier. Re-running a completed phase (`--replay`) is designed to be a no-op or an explicit, detected change — never a re-bootstrap.
+
+## Configuration file
+
+One YAML file per site is the single source of truth; `init` is just a convenient way to produce it. See [`config.example.yml`](config.example.yml) for the annotated full reference. The essentials:
+
+```yaml
+site:
+  name: uop-test            # used in state, prompts, emitted monitor config
+  environment: lab          # lab | production (production hardens confirmations,
+                            #                   refuses tls provider "none")
+provision:
+  state_file: .state/uop-test.json
+  refuse_existing: true     # preflight hard-fails on hosts that already carry a cluster
+
+ssh:
+  user: root                # or a sudo-capable user with become: true
+  auth: key                 # key | agent | password (password is prompted, never stored)
+  key_file: ~/.ssh/id_ed25519
+
+nodes:                      # exactly 3; first is bootstrap_leader by default
+  - { name: ak-node-1, ip: 10.99.97.71, bootstrap_leader: true }
+  - { name: ak-node-2, ip: 10.99.97.72 }
+  - { name: ak-node-3, ip: 10.99.97.73 }
+
+network:
+  vip: 10.99.97.70          # must share the nodes' /24 (VRRP needs L2 adjacency)
+  interface: ens18
+  expected_mtu: 1400        # 1400 for VXLAN overlays, 1500 for flat L2
+
+tls:
+  provider: self_signed     # none | self_signed | acme | import
+  hostname: auth.example.gr
+  # acme:   { directory_url: ..., email: ..., staging: true }
+  # import: { fullchain: ./certs/fullchain.pem, privkey: ./certs/privkey.pem }
+
+postgres:
+  extra_pg_hba: []          # site-specific lines appended to the generated pg_hba
+                            # e.g. "host postgres postgres 10.23.2.50/32 scram-sha-256"
+base:
+  apt_upgrade: false        # baseline packages are installed either way;
+                            # full dist upgrades stay under the operator's patching policy
+```
+
+Config is validated in one pass at load: placeholder IPs, VIP/node subnet mismatches, missing key files, and provider-specific requirements are all reported together before anything connects anywhere.
+
+## Phases
+
+### preflight *(read-only)*
+
+Validates all three nodes without changing anything. Safe to run against any host at any time — including production, where it should refuse with "existing cluster artifacts".
+
+Checks per node: SSH reachability and root/sudo, OS release (warn if not Ubuntu 24.04), interface exists with the expected MTU, ≥ 20 GB free on `/`, all 12 required ports free (80, 443, 2379, 2380, 5432, 5000, 5001, 8008, 9000, 9080, 9300, 9443), no existing cluster artifacts (`/etc/patroni`, running etcd/haproxy/nginx/authentik containers, enabled keepalived) when `refuse_existing` is set, and an inter-node ping with the DF bit at the expected MTU (catches VXLAN overhead misconfiguration before it becomes a mysterious replication stall). Cluster-wide: clock skew ≤ 5 s, VIP not answering (nothing may own it yet), and DNS for `tls.hostname` resolving to the VIP — a hard failure for `acme`, a warning otherwise.
+
+### base
+
+Guide Step 1. Hostname per node, an akropolis-marker-managed block in `/etc/hosts` (removable and re-runnable), baseline packages + chrony, Docker CE from Docker's own repository, and UFW: default deny incoming, allow ssh/80/443/9000 and all traffic between the three node IPs, then `--force enable` (the ssh rule always lands before enable).
+
+`apt upgrade` is deliberately **not** run unless `base.apt_upgrade: true` — package drift belongs to your patching policy, not the provisioner.
+
+Verify: `docker compose` available, UFW active, chrony running, hostname applied — on every node.
+
+### etcd
+
+Guide Step 2. A 3-node RAFT cluster (quorum 2) as Patroni's DCS, from `gcr.io/etcd-development/etcd:v3.5.30` in Docker with `network_mode: host`.
+
+The initial-cluster token is generated **once** and pinned in the state file, so a re-run can never re-bootstrap a formed cluster. Rendered compose files are pushed with checksum detection; a changed config on a running container triggers `down && up -d` — never `restart`, which does not re-apply volume mounts or network mode.
+
+Verify: `etcdctl endpoint health` OK on all three client URLs and 3 members `started`, with a convergence window for fresh starts.
+
+### patroni
+
+Guide Step 3, and the phase where the bootstrap order makes or breaks the cluster — encoded explicitly instead of hoped for:
+
+1. PostgreSQL 16 (pgdg repo) and the Patroni venv (`/opt/patroni`, `patroni[etcd3]` + `psycopg2-binary`) are installed on **all** nodes, configs and systemd units rendered everywhere — but **nothing starts**. The stock `postgresql` service is stopped and disabled: Patroni owns the lifecycle.
+2. Patroni starts on the bootstrap leader **only**, and the phase gates on the REST API answering `200` on `/primary` — the *promoted self to leader* moment — with a 300 s budget. If it never promotes, the phase stops **before** any replica starts.
+3. Replicas start one at a time, each gated on reaching `role=replica` with `state=running/streaming` before the next begins.
+4. The `authentik` role and database are created on the leader, idempotently.
+
+The rendered `pg_hba` includes the `127.0.0.1/32` replication and rewind entries whose absence has caused silent streaming failures in the field, plus a `host all all <nodes-subnet>/24` line; site-specific lines go in `postgres.extra_pg_hba`. All four passwords (postgres superuser, replicator, rewind, authentik DB) are generated once, pinned in state, and never printed.
+
+Two operational facts worth knowing even with automation: live Patroni settings are DCS-owned after bootstrap (change them with `patronictl edit-config`, not by editing the file), and restarting `patroni.service` on the current **leader** is a real failover, not a no-op.
+
+Verify: `patronictl list` shows exactly 1 Leader + 2 replicas, all running/streaming.
+
+### haproxy
+
+Guide Step 5. One HAProxy per node as a pure PostgreSQL connection router — Authentik will always talk to `127.0.0.1:5000` (leader) / `:5001` (replicas), and each HAProxy independently discovers the leader via `GET /primary` on Patroni's REST API. akropolis configures the mechanism; it never hardcodes the answer.
+
+The config carries the WAN-hardened settings: `timeout client/server 1h` (long-lived Django LISTEN connections), TCP keepalives both directions, and `on-marked-down shutdown-sessions` so failover kills stale sessions instead of letting them hang. The stats page on `:9000` gets a password generated once and pinned in state.
+
+Reload semantics follow hard-won learnings: a cfg-only change on a running container is a live `docker kill --signal=HUP` (the file push truncates in place, preserving the bind-mount inode); a compose change is `down && up -d`; an unchanged config is an explicit no-op.
+
+Verify, two layers: the stats CSV on **every** node must converge to exactly 1 UP server in `pg_primary_backend` and 2 UP in `pg_replica_backend`; then a real `SELECT 1` as the `authentik` user through `127.0.0.1:5000` proves the whole chain — HAProxy routing, Patroni leader, `pg_hba`, credentials.
+
+### tls
+
+Certificate provider abstraction. The only thing that varies is how `fullchain.pem` + `privkey.pem` come to exist; distribution to `/opt/nginx/certs` on all nodes (privkey mode 0600) and verification are identical for all providers.
+
+- **`none`** — testing/local development only; refused for `production` sites at config load. nginx will serve plain HTTP on :80. Note the honest limitation: no secure context means WebAuthn/passkey flows cannot be tested under `none`.
+- **`self_signed`** — a 10-year cert generated on the bootstrap leader with SANs covering the hostname, all node names, the VIP, and all node IPs; then distributed. Idempotent: an existing cert that matches the hostname and is valid for > 30 days is kept.
+- **`acme`** — any ACME CA via `directory_url` (Let's Encrypt, HARICA ACME, ZeroSSL...). This phase only **stages**: certbot installed on the leader, webroot prepared at `/var/www/certbot`, and a self-signed placeholder put in place so nginx can start and serve the HTTP-01 challenge. Issuance, the multi-node deploy hook, and the cert swap happen after the nginx phase brings nginx up. Start with `staging: true`; flip it after one clean end-to-end run to avoid burning rate limits.
+- **`import`** — externally issued certificates, e.g. the HARICA portal flow. Validation happens **on the workstation before anything touches a node**: the private key must match the certificate (SPKI comparison), the SAN must cover the configured hostname (wildcards understood), and the cert must not be expired (≤ 30 days left is a warning). The expiry date is pinned in state so the monitor can alert on it — imported certs have no renewal timer, and pretending otherwise would be worse than saying so.
+
+Verify: cert and key present and cryptographically matching on every node.
+
+## State file & secrets
+
+Each site gets a JSON state file (default `.state/<site>.json`, mode 0600) recording phase completion and **pinned generate-once values**: the etcd initial-cluster token, all PostgreSQL passwords, the HAProxy stats password, TLS metadata. Pinning is what makes re-runs safe — a completed bootstrap can never be re-bootstrapped, and a re-render can never rotate a password out from under a running cluster. The state file refuses to load for a different site name than the one it was created for.
+
+Security posture, stated plainly:
+
+- The site config file contains **no secrets** and is safe to commit (git-ignored by default anyway, except the example).
+- SSH passwords, when used, are prompted at runtime and never stored.
+- Generated secrets currently live **in plaintext** inside the state file. That is acceptable for lab work and is flagged as a hard requirement to fix (age/sops encryption or OS keyring) before production use. Treat `.state/` accordingly: it is git-ignored, keep it that way.
+- Imported TLS private keys transit through workstation memory during validation and distribution; they are written only to `/opt/nginx/certs/privkey.pem` (0600) on the nodes.
+
+## Roadmap
+
+nginx + keepalived phase (VIP, weight-tracked failover, ACME finalization with multi-node deploy hook) → authentik phase (secret key, first-node migrations, bootstrap admin + API token) → handoff (emit the monitor's config, print the admin URL) → fold in the monitoring TUI as `akropolis monitor` → encrypted state secrets → Greek edition of this guide.
+
+## License
+
+MIT.
