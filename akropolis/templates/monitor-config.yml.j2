@@ -1,0 +1,113 @@
+# ============================================================
+#  Authentik HA Cluster Monitor — Site Configuration
+#  Emitted by akropolis handoff for site: {{ site_name }}
+#  Generated {{ generated_at }} — hand-edits survive until the next handoff run.
+# ============================================================
+
+site_name: "{{ site_title }}"
+
+unicode_bullets: true
+refresh_interval: 20
+http_timeout: 5
+
+# VIP managed by keepalived
+vip: "{{ vip }}"
+
+# Network interface keepalived runs on (used for display only)
+vrrp_interface: "{{ interface }}"
+
+nodes:
+  authentik:
+{% for n in nodes %}
+    - ip: "{{ n.ip }}"
+      name: "{{ n.name }}"
+{% endfor %}
+
+  patroni:
+{% for n in nodes %}
+    - ip: "{{ n.ip }}"
+      name: "{{ n.name }}"
+{% endfor %}
+
+  etcd:
+{% for n in nodes %}
+    - ip: "{{ n.ip }}"
+      name: "{{ n.name }}"
+{% endfor %}
+
+  haproxy:
+{% for n in nodes %}
+    - ip: "{{ n.ip }}"
+      name: "{{ n.name }}"
+{% endfor %}
+
+ports:
+  authentik: 9443
+  patroni: 8008
+  etcd: 2379
+  haproxy_stats: 9000
+  nginx_status: 8080
+  postgres: 5432
+
+ssh:
+  username: "{{ ssh_user }}"
+  key_file: "{{ ssh_key_file }}"
+
+# Services to collect logs from.
+# type: "docker" (container name) or "systemd" (unit name)
+# nodes: key from the nodes/keepalived sections above that lists the target hosts
+services:
+  - label: "Auth Server"
+    nodes: authentik
+    type: docker
+    container: "authentik-server-1"
+  - label: "Auth Worker"
+    nodes: authentik
+    type: docker
+    container: "authentik-worker-1"
+  - label: "Patroni"
+    nodes: patroni
+    type: systemd
+    unit: "patroni"
+  - label: "etcd"
+    nodes: etcd
+    type: docker
+    container: "etcd"
+  - label: "HAProxy"
+    nodes: haproxy
+    type: docker
+    container: "haproxy"
+  - label: "Nginx"
+    nodes: authentik
+    type: docker
+    container: "nginx"
+  - label: "Keepalived"
+    nodes: keepalived
+    type: systemd
+    unit: "keepalived"
+
+authentik:
+  url: "{{ authentik_url }}"
+
+credentials:
+  haproxy_stats_user: "admin"
+  haproxy_stats_pass: "{{ haproxy_stats_pass }}"
+  authentik_api_token: "{{ api_token }}"
+  postgres_user: "postgres"
+  postgres_password: "{{ postgres_password }}"
+
+keepalived:
+  # Base priorities per node — matches what akropolis deployed in keepalived.conf
+  # (effective = base + track_weight when nginx is down)
+  track_weight: -25
+  nodes:
+{% for n in nodes %}
+    - ip: "{{ n.ip }}"
+      name: "{{ n.name }}"
+      base_priority: {{ priorities[loop.index0] }}
+{% endfor %}
+{% if cert_expiry %}
+
+# NOTE: tls provider 'import' has no auto-renewal — certificate expires {{ cert_expiry }}.
+# ak-monitor has no cert-expiry field yet; consider adding one (see akropolis NOTES.md).
+{% endif %}

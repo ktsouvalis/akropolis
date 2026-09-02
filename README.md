@@ -34,8 +34,10 @@ No Redis: Authentik ≥ 2025.10 keeps sessions, cache, tasks, and WebSocket stat
 | tls — `none` / `self_signed` / `acme` (staging) / `import` | ✅ implemented, tested |
 | nginx-keepalived (incl. ACME finalization) | ✅ implemented (configs validated with real `nginx -t` / `keepalived -t`) |
 | authentik | ✅ implemented (compose mirrors the production file verbatim) |
-| handoff | 🚧 stub |
+| handoff | ✅ implemented, tested (emits the real ak-monitor schema) |
 | `akropolis monitor` | 🚧 stub (will fold in ak-monitor) |
+
+**The provisioning pipeline is complete** — every phase from preflight to handoff is implemented. First full run against real VMs is the remaining milestone.
 
 ## Install
 
@@ -215,6 +217,14 @@ The compose file mirrors the production one verbatim: `depends_on: worker: condi
 The `.env` carries the non-negotiables for this architecture: `AUTHENTIK_POSTGRESQL__HOST=127.0.0.1` (each node talks to its local HAProxy, never a node IP — the lesson of a past incident), and `AUTHENTIK_LISTEN__HTTP/HTTPS/METRICS` moved to 9080/9443/9300 because HAProxy owns 9000 and without the overrides the Go router silently fails to bind while everything looks alive. `AUTHENTIK_SECRET_KEY` (identical everywhere), the akadmin bootstrap password, and the bootstrap API token are generated once and pinned in state; the token is consumed by Authentik's first migration to create akadmin's API credentials, and later handed to the monitor.
 
 Verify: both containers `healthy` on every node, `/-/health/ready/` answers per node, and the API responds to the pinned bootstrap token — proving now the exact credential the monitor will depend on later.
+
+### handoff
+
+The last phase, and the only one that touches nothing on the nodes. It writes the monitoring tool's `config.yml` **on the workstation** (path from `monitor.output`, default `./config.<site>.monitor.yml`, mode 0600), filled entirely from the site config and pinned state: the per-service node groups, ports, SSH log-collection settings, the HAProxy stats and postgres credentials, the Authentik API token that the authentik phase already proved against the live API, and the keepalived `track_weight` (−25) and per-node `base_priority` values exactly as deployed — the monitor computes effective VRRP priorities from these, so config and reality match by construction rather than by discipline. When the tls provider is `import`, the certificate expiry is noted in the emitted file, since no renewal timer exists.
+
+It then prints the landing card: admin URL, the `akadmin` username, and the bootstrap password — shown **once**, in your terminal, because you need it to log in; change it after first login. Pending-ACME and staging-cert conditions are called out on the card if applicable.
+
+Verify parses the emitted file back and asserts the schema: all top-level keys the monitor expects, a non-empty API token, and 3 nodes in every service group.
 
 ## State file & secrets
 

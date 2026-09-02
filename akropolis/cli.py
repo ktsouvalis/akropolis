@@ -17,10 +17,11 @@ from rich.console import Console
 from . import __version__
 from .config import ConfigError, load
 from .init_wizard import run_wizard
-from .phases.base import PhaseContext, StubPhase, run_phases
+from .phases.base import PhaseContext, run_phases
 from .phases.authentik_phase import AuthentikPhase
 from .phases.base_setup import BasePhase
 from .phases.etcd_phase import EtcdPhase
+from .phases.handoff_phase import HandoffPhase
 from .phases.haproxy_phase import HAProxyPhase
 from .phases.nginx_keepalived_phase import NginxKeepalivedPhase
 from .phases.tls_phase import TLSPhase
@@ -31,8 +32,7 @@ from .state import State
 
 console = Console()
 
-# Ordered phase pipeline. Implemented: all except handoff.
-# The stubs make the intended shape visible and stop the runner cleanly.
+# Ordered phase pipeline — all phases implemented.
 PIPELINE = [
     PreflightPhase(),
     BasePhase(),
@@ -42,7 +42,7 @@ PIPELINE = [
     TLSPhase(),
     NginxKeepalivedPhase(),
     AuthentikPhase(),
-    StubPhase("handoff"),     # emit monitor config, print admin URL
+    HandoffPhase(),
 ]
 
 
