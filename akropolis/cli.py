@@ -21,6 +21,7 @@ from .phases.base import PhaseContext, StubPhase, run_phases
 from .phases.base_setup import BasePhase
 from .phases.etcd_phase import EtcdPhase
 from .phases.haproxy_phase import HAProxyPhase
+from .phases.nginx_keepalived_phase import NginxKeepalivedPhase
 from .phases.tls_phase import TLSPhase
 from .phases.patroni_phase import PatroniPhase
 from .phases.preflight import PreflightPhase
@@ -29,7 +30,7 @@ from .state import State
 
 console = Console()
 
-# Ordered phase pipeline. Implemented: preflight, base, etcd, patroni, haproxy, tls.
+# Ordered phase pipeline. Implemented: all except authentik + handoff.
 # The stubs make the intended shape visible and stop the runner cleanly.
 PIPELINE = [
     PreflightPhase(),
@@ -38,7 +39,7 @@ PIPELINE = [
     PatroniPhase(),
     HAProxyPhase(),
     TLSPhase(),
-    StubPhase("nginx-keepalived"),
+    NginxKeepalivedPhase(),
     StubPhase("authentik"),
     StubPhase("handoff"),     # emit monitor config, print admin URL
 ]

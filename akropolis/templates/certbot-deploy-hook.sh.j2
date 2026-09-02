@@ -1,0 +1,25 @@
+#!/bin/bash
+# akropolis-managed certbot deploy hook.
+# Runs as root after every successful renewal on the certbot node.
+# Copies the renewed cert into nginx's cert dir locally, distributes it to the
+# other nodes over the dedicated key, and reloads nginx everywhere.
+# The certs volume is a DIRECTORY mount, so in-place file replacement + reload
+# is safe (the single-file bind-mount inode trap applies to nginx.conf, not here).
+set -euo pipefail
+
+LIVE="/etc/letsencrypt/live/{{ hostname }}"
+DEST="/opt/nginx/certs"
+KEY="/root/.ssh/id_ed25519_certbot"
+
+install -m 0644 "$LIVE/fullchain.pem" "$DEST/fullchain.pem"
+install -m 0600 "$LIVE/privkey.pem"   "$DEST/privkey.pem"
+docker exec nginx nginx -s reload
+
+{% for n in other_nodes %}
+scp -i "$KEY" -o StrictHostKeyChecking=accept-new \
+    "$DEST/fullchain.pem" "$DEST/privkey.pem" root@{{ n.ip }}:$DEST/
+ssh -i "$KEY" -o StrictHostKeyChecking=accept-new root@{{ n.ip }} \
+    "chmod 600 $DEST/privkey.pem && docker exec nginx nginx -s reload"
+{% endfor %}
+
+echo "akropolis deploy hook: certificate distributed and nginx reloaded on all nodes"

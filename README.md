@@ -19,8 +19,8 @@ Client → VIP (keepalived/VRRP) → nginx on MASTER node → any of 3 Authentik
 | PostgreSQL 16 + Patroni | bare-metal systemd | HA database with automatic failover |
 | etcd v3.5 | Docker, `network_mode: host` | DCS: Patroni's distributed lock + config store |
 | HAProxy | Docker, `network_mode: host` | per-node PG router: `127.0.0.1:5000` always reaches the current leader |
-| nginx | Docker, `network_mode: host` | TLS termination + load balancing across Authentik backends *(phase pending)* |
-| keepalived | bare-metal systemd | VRRP virtual IP with health-tracked failover *(phase pending)* |
+| nginx | Docker, `network_mode: host` | TLS termination + load balancing across Authentik backends |
+| keepalived | bare-metal systemd | VRRP virtual IP with health-tracked failover |
 | Authentik | Docker, `network_mode: host` | the identity provider itself *(phase pending)* |
 
 No Redis: Authentik ≥ 2025.10 keeps sessions, cache, tasks, and WebSocket state in PostgreSQL.
@@ -32,7 +32,8 @@ No Redis: Authentik ≥ 2025.10 keeps sessions, cache, tasks, and WebSocket stat
 | preflight | ✅ implemented (read-only) |
 | base / etcd / patroni / haproxy | ✅ implemented (not yet exercised against real hosts) |
 | tls — `none` / `self_signed` / `acme` (staging) / `import` | ✅ implemented, tested |
-| acme finalization / nginx-keepalived / authentik / handoff | 🚧 stubs |
+| nginx-keepalived (incl. ACME finalization) | ✅ implemented (configs validated with real `nginx -t` / `keepalived -t`) |
+| authentik / handoff | 🚧 stubs |
 | `akropolis monitor` | 🚧 stub (will fold in ak-monitor) |
 
 ## Install
@@ -188,6 +189,18 @@ Certificate provider abstraction. The only thing that varies is how `fullchain.p
 
 Verify: cert and key present and cryptographically matching on every node.
 
+### nginx-keepalived
+
+Guide Step 6, with the field learnings applied over the first-draft values. Order is enforced, not hoped for: nginx comes up on all nodes and each node is verified **individually** before keepalived is touched.
+
+**nginx** (`nginx:1.27-alpine`, host network) terminates TLS and load-balances `least_conn` across the three Authentik backends on `:9443`. The config is identical on every node except the `/monitor` location, which returns per-node JSON (`{"node":"ak-node-2","ip":"..."}`) — so `curl -k https://<VIP>/monitor` always tells you which node currently holds the VIP; this is also what the monitoring tool polls. `:8080/nginx_status` serves `stub_status` restricted to the nodes' subnet plus any CIDRs in `network.stub_status_allow`. Port 80 redirects to HTTPS with an exception for the ACME challenge path (`alias`, not `root`). With `tls.provider: none`, a plain HTTP `:80` proxy is rendered instead. Conf changes on a running container are applied with `down && up -d` — the single-file bind-mount inode trap makes `nginx -s reload` unreliable after a conf push.
+
+**keepalived** (bare-metal systemd) provides the VIP via VRRP with a `chk_nginx` track script (`nc -z localhost 443`, or 80 for provider `none`): track weight **−25** — the learned value that eliminates priority ties under single-failure scenarios — with `fall 2 rise 2`, so a node whose nginx dies sheds the VIP within ~6 s. No-preemption is encoded in keepalived's canonical form: **all instances `state BACKUP` + `nopreempt`** with differing priorities (`network.vrrp.priorities`, default `[100, 90, 80]`). The highest-priority healthy node wins the initial election, and a recovered node never steals the VIP back — one flap per failure, not two. `script_user root` + `enable_script_security` silence the script-security violation. `auth_pass` is silently truncated by keepalived to 8 characters, so exactly 8 are generated and pinned in state.
+
+**ACME finalization** runs at the end of this phase when the tls phase staged it: a dedicated root keypair (`/root/.ssh/id_ed25519_certbot`) is generated on the certbot node and marker-authorized on the others; `certbot certonly --webroot` issues against the configured directory URL (the VIP holder serves the HTTP-01 challenge); an akropolis-managed deploy hook at `/etc/letsencrypt/renewal-hooks/deploy/akropolis-nginx.sh` distributes `fullchain.pem`/`privkey.pem` to the other nodes and reloads nginx everywhere on **every future renewal**; the hook is run once immediately to swap the self-signed placeholder. The cert directory is a directory mount, so in-place file replacement + reload is safe there. With `staging: true` the issued cert is untrusted by browsers by design — flip to `false` and `--replay nginx-keepalived` for the real one. Failed issuance leaves the placeholder in place and stops the phase; nothing breaks, fix DNS/reachability and replay.
+
+Verify: every node's `/monitor` returns its own identity and `stub_status` answers; **exactly one** node holds the VIP on the configured interface; the VIP itself answers `/monitor`. A live failover test (stop nginx on the VIP holder, watch `/monitor` change identity within seconds) is deliberately left as a manual exercise — akropolis will not kill services to prove a point.
+
 ## State file & secrets
 
 Each site gets a JSON state file (default `.state/<site>.json`, mode 0600) recording phase completion and **pinned generate-once values**: the etcd initial-cluster token, all PostgreSQL passwords, the HAProxy stats password, TLS metadata. Pinning is what makes re-runs safe — a completed bootstrap can never be re-bootstrapped, and a re-render can never rotate a password out from under a running cluster. The state file refuses to load for a different site name than the one it was created for.
@@ -201,7 +214,7 @@ Security posture, stated plainly:
 
 ## Roadmap
 
-nginx + keepalived phase (VIP, weight-tracked failover, ACME finalization with multi-node deploy hook) → authentik phase (secret key, first-node migrations, bootstrap admin + API token) → handoff (emit the monitor's config, print the admin URL) → fold in the monitoring TUI as `akropolis monitor` → encrypted state secrets → Greek edition of this guide.
+authentik phase (secret key, first-node migrations, bootstrap admin + API token) → handoff (emit the monitor's config, print the admin URL) → fold in the monitoring TUI as `akropolis monitor` → encrypted state secrets → Greek edition of this guide.
 
 ## License
 
