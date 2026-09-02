@@ -1,0 +1,147 @@
+# ak-cluster site configuration
+# One file per site. Same file feeds both entry points:
+#   ak-cluster provision config.<site>.yml
+#   ak-cluster monitor   config.<site>.yml   (subset — emitted automatically at handoff)
+#
+# Values in <angle brackets> are placeholders.
+
+# ---------------------------------------------------------------------------
+# Site identity & safety
+# ---------------------------------------------------------------------------
+site:
+  name: uop-test                  # used in state file, prompts, emitted monitor config
+  environment: lab                # lab | production
+                                  #   production: every apply phase requires typing the
+                                  #   site name to confirm; --force is ignored.
+  description: "UoP throwaway test cluster (VLAN 700)"
+
+# Provisioner behavior
+provision:
+  state_file: .state/uop-test.json   # phase completion + rendered-config checksums (resumability)
+  refuse_existing: true              # preflight FAILS if a node already has /etc/patroni,
+                                     # running ak containers, or an enabled keepalived unit.
+                                     # Override per-run with --adopt (never silently).
+                                     # Important when test VMs share a subnet with prod.
+
+# ---------------------------------------------------------------------------
+# SSH access (provisioning only — never written into the monitor config)
+# ---------------------------------------------------------------------------
+ssh:
+  user: root                      # or sudo-capable user
+  become: false                   # true if user != root
+  auth: key                       # key | agent | password  (password → prompted, never stored)
+  key_file: ~/.ssh/id_ed25519
+  port: 22
+
+# ---------------------------------------------------------------------------
+# Nodes — exactly 3
+# ---------------------------------------------------------------------------
+nodes:
+  - name: ak-node-1
+    ip: <NODE1_IP>
+    bootstrap_leader: true        # patroni initdb happens here; ACME/certbot lives here
+  - name: ak-node-2
+    ip: <NODE2_IP>
+  - name: ak-node-3
+    ip: <NODE3_IP>
+
+# ---------------------------------------------------------------------------
+# Network
+# ---------------------------------------------------------------------------
+network:
+  vip: <VIP_IP>
+  interface: ens18                # asserted in preflight on every node
+  expected_mtu: 1400              # preflight asserts (VXLAN overlay); set 1500 for flat L2
+  vrrp:
+    router_id: 51
+    auth_pass_prompt: true        # VRRP password prompted, not stored
+    priorities: [110, 100, 90]    # node order; track-script weight -25 baked into template
+  check_l2_adjacency: true        # preflight: nodes must see each other's VRRP multicast
+
+# ---------------------------------------------------------------------------
+# PostgreSQL / Patroni / etcd
+# ---------------------------------------------------------------------------
+postgres:
+  version: 16
+  cluster_name: authentik-postgres
+  # superuser / replication / rewind passwords come from `secrets`, never here
+
+etcd:
+  # initial-cluster token is generated once and recorded in the state file,
+  # so a re-run never re-bootstraps a formed cluster
+  client_port: 2379
+  peer_port: 2380
+
+haproxy:
+  primary_port: 5000
+  replica_port: 5001
+  stats_port: 9000
+  timeouts_wan: true              # 1h client/server + tcp keepalives (guide 5.x)
+
+# ---------------------------------------------------------------------------
+# TLS — provider abstraction
+# ---------------------------------------------------------------------------
+tls:
+  provider: none                  # none | self_signed | acme | import
+  #
+  # none        — testing / local dev ONLY.
+  #               No certs generated. nginx listens on :80 plain HTTP, keepalived
+  #               track script checks :80. The internal nginx→Authentik leg stays
+  #               HTTPS :9443 (Authentik's own self-signed — unavoidable & fine).
+  #               LIMITATION: no secure context → WebAuthn/passkeys will not work,
+  #               and browsers may drop secure cookies. Refused when
+  #               site.environment == production.
+  #
+  # self_signed — lab / bootstrap. 10-year cert, SANs cover hostname + VIP + node IPs.
+  #
+  # acme        — any ACME CA via directory_url (LE, HARICA ACME, ZeroSSL...).
+  #               Runs on the bootstrap_leader node only; deploy hook distributes
+  #               to the other two over SSH. Bootstrap order handled internally:
+  #               self-signed first → nginx up → ACME issuance → swap → reload.
+  #
+  # import      — externally issued cert (HARICA portal flow). Validates chain +
+  #               key match + SAN coverage of `hostname`, distributes, reloads.
+  #               No renewal exists: expiry is written into the emitted monitor
+  #               config so ak-monitor alerts on it.
+
+  hostname: auth-test.uop.gr      # public FQDN; must resolve to VIP for acme
+
+  # acme:
+  #   directory_url: https://acme-v02.api.letsencrypt.org/directory
+  #   email: <admin_email>
+  #   staging: true               # start true; flip after a clean end-to-end run
+  # import:
+  #   fullchain: ./certs/fullchain.pem
+  #   privkey:   ./certs/privkey.pem   # or privkey_prompt: true
+
+# ---------------------------------------------------------------------------
+# Authentik
+# ---------------------------------------------------------------------------
+authentik:
+  tag: "2026.5.6"
+  # AUTHENTIK_SECRET_KEY: generated once, recorded encrypted in state, identical on all nodes
+  # Listen ports pinned off HAProxy's 9000 (guide 7.x): http 9080 / https 9443 / metrics 9300
+  bootstrap:
+    create_admin: true            # via AUTHENTIK_BOOTSTRAP_PASSWORD (prompted or generated)
+    create_api_token: true        # via AUTHENTIK_BOOTSTRAP_TOKEN → handed to monitor config
+  healthcheck: python3-urllib     # curl absent from image ≥2026.5.6 (guide 9.9)
+
+# ---------------------------------------------------------------------------
+# Secrets handling
+# ---------------------------------------------------------------------------
+secrets:
+  source: prompt                  # prompt | file | env
+  # file: ./secrets.uop-test.yml  # git-ignored; sops/age-encrypted supported
+  # Covers: postgres superuser/replication/rewind, VRRP pass, bootstrap admin
+  # password, bootstrap API token, secret key. NEVER copied into monitor config
+  # except the API token ak-monitor needs.
+
+# ---------------------------------------------------------------------------
+# Handoff
+# ---------------------------------------------------------------------------
+monitor:
+  emit: true
+  output: ./config.uop-test.monitor.yml
+  # Emitted contents: nodes/IPs, VIP, Patroni REST :8008, etcd :2379,
+  # HAProxy stats :9000 (csv), Authentik health endpoints, worker check via
+  # /api/v3/tasks/workers/, API token, and cert expiry date when provider=import.

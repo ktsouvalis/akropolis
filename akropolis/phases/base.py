@@ -1,0 +1,131 @@
+"""Phase framework.
+
+Every phase runs plan → confirm → apply → verify:
+
+  plan    — describe exactly what will happen (rendered diffs where relevant)
+  confirm — lab: y/N; production: type the site name; read-only phases skip this
+  apply   — do it
+  verify  — health-gate; a phase that applies but fails verify is FAILED, and
+            the runner stops (never proceeds onto an unhealthy foundation)
+
+The runner is resumable: completed phases are skipped unless --replay.
+"""
+
+from __future__ import annotations
+
+from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
+
+from rich.console import Console
+
+from ..config import SiteConfig
+from ..sshexec import Fleet
+from ..state import State
+
+console = Console()
+
+
+@dataclass
+class Check:
+    """One named check result inside a phase (used heavily by preflight)."""
+
+    node: str
+    name: str
+    ok: bool
+    detail: str = ""
+    warn: bool = False  # ok=False + warn=True → warning, not failure
+
+
+@dataclass
+class PhaseContext:
+    cfg: SiteConfig
+    state: State
+    fleet: Fleet
+    checks: list[Check] = field(default_factory=list)
+
+    def record(self, node: str, name: str, ok: bool, detail: str = "", warn: bool = False) -> Check:
+        c = Check(node=node, name=name, ok=ok, detail=detail, warn=warn)
+        self.checks.append(c)
+        mark = "[green]✔[/green]" if ok else ("[yellow]⚠[/yellow]" if warn else "[red]✘[/red]")
+        console.print(f"  {mark} ({node}) {name}" + (f" — {detail}" if detail else ""), markup=True, highlight=False)
+        return c
+
+
+class Phase(ABC):
+    name: str = "unnamed"
+    read_only: bool = False
+
+    @abstractmethod
+    def plan(self, ctx: PhaseContext) -> list[str]:
+        """Return human-readable lines describing what apply() will do."""
+
+    @abstractmethod
+    def apply(self, ctx: PhaseContext) -> None: ...
+
+    @abstractmethod
+    def verify(self, ctx: PhaseContext) -> bool: ...
+
+
+def _confirm(cfg: SiteConfig, phase: Phase) -> bool:
+    if phase.read_only:
+        return True
+    if cfg.environment == "production":
+        console.print(
+            f"[bold red]PRODUCTION[/bold red] site [bold]{cfg.name}[/bold] — "
+            f"type the site name to apply phase [bold]{phase.name}[/bold]:"
+        )
+        return input("> ").strip() == cfg.name
+    answer = input(f"Apply phase '{phase.name}'? [y/N] ").strip().lower()
+    return answer in ("y", "yes")
+
+
+def run_phases(phases: list[Phase], ctx: PhaseContext, replay: bool = False) -> bool:
+    for phase in phases:
+        status = ctx.state.phase_status(phase.name)
+        if status == "done" and not replay:
+            console.print(f"[dim]phase {phase.name}: already done — skipping (use --replay to re-run)[/dim]")
+            continue
+
+        console.rule(f"phase: {phase.name}")
+        ctx.checks.clear()
+
+        console.print("[bold]plan:[/bold]")
+        for line in phase.plan(ctx):
+            console.print(f"  • {line}")
+
+        if not _confirm(ctx.cfg, phase):
+            console.print("[yellow]not confirmed — stopping.[/yellow]")
+            ctx.state.mark_phase(phase.name, "declined")
+            return False
+
+        try:
+            phase.apply(ctx)
+        except Exception as exc:  # noqa: BLE001 — surface everything, then stop
+            console.print(f"[red]apply failed:[/red] {exc}")
+            ctx.state.mark_phase(phase.name, "failed", {"error": str(exc)})
+            return False
+
+        if phase.verify(ctx):
+            ctx.state.mark_phase(phase.name, "done")
+            console.print(f"[green]phase {phase.name}: OK[/green]")
+        else:
+            ctx.state.mark_phase(phase.name, "failed")
+            console.print(f"[red]phase {phase.name}: verify failed — stopping.[/red]")
+            return False
+    return True
+
+
+class StubPhase(Phase):
+    """Placeholder for phases not yet implemented; stops the runner cleanly."""
+
+    def __init__(self, name: str):
+        self.name = name
+
+    def plan(self, ctx: PhaseContext) -> list[str]:
+        return [f"(not implemented yet — provisioning stops here)"]
+
+    def apply(self, ctx: PhaseContext) -> None:
+        raise NotImplementedError(f"phase '{self.name}' is not implemented in this version")
+
+    def verify(self, ctx: PhaseContext) -> bool:
+        return False

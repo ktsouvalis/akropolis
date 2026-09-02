@@ -1,0 +1,23 @@
+services:
+  etcd:
+    image: gcr.io/etcd-development/etcd:v3.5.30
+    container_name: etcd
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - /opt/etcd/data:/etcd-data
+    environment:
+      ETCD_NAME: "etcd-{{ node.name }}"
+      ETCD_DATA_DIR: "/etcd-data"
+      ETCD_LISTEN_CLIENT_URLS: "http://0.0.0.0:2379"
+      ETCD_LISTEN_PEER_URLS: "http://0.0.0.0:2380"
+      ETCD_ADVERTISE_CLIENT_URLS: "http://{{ node.ip }}:2379"
+      ETCD_INITIAL_ADVERTISE_PEER_URLS: "http://{{ node.ip }}:2380"
+      ETCD_INITIAL_CLUSTER: "{% for n in nodes %}etcd-{{ n.name }}=http://{{ n.ip }}:2380{% if not loop.last %},{% endif %}{% endfor %}"
+      ETCD_INITIAL_CLUSTER_TOKEN: "{{ cluster_token }}"
+      ETCD_INITIAL_CLUSTER_STATE: "{{ cluster_state }}"
+      ETCD_AUTO_COMPACTION_RETENTION: "1"
+      ETCD_SNAPSHOT_COUNT: "5000"
+      ETCD_HEARTBEAT_INTERVAL: "50"
+      ETCD_ELECTION_TIMEOUT: "500"
+    command: etcd

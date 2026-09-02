@@ -1,0 +1,18 @@
+[Unit]
+Description=Patroni PostgreSQL HA
+After=network.target docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+User=postgres
+Group=postgres
+ExecStart=/opt/patroni/bin/patroni /etc/patroni/config.yml
+ExecReload=/bin/kill -s HUP $MAINPID
+KillMode=process
+TimeoutSec=30
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target

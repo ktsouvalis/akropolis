@@ -1,0 +1,7 @@
+.state/
+config.*.yml
+!config.example.yml
+secrets.*.yml
+__pycache__/
+*.egg-info/
+.venv/

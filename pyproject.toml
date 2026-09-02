@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "akropolis"
+version = "0.2.0"
+description = "Provision and monitor a 3-node Authentik HA cluster (Patroni/etcd/HAProxy/nginx/keepalived)"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Digital Governance Unit, University of Peloponnese" }]
+dependencies = [
+    "paramiko>=3.4",
+    "PyYAML>=6.0",
+    "rich>=13.7",
+    "Jinja2>=3.1",
+]
+
+[project.scripts]
+akropolis = "akropolis.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["akropolis*"]
+
+[tool.setuptools.package-data]
+akropolis = ["templates/*"]

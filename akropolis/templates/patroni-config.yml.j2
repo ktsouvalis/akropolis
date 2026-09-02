@@ -1,0 +1,66 @@
+scope: {{ scope }}
+namespace: /service/
+name: pg-{{ node.name }}
+
+restapi:
+  listen: 0.0.0.0:8008
+  connect_address: {{ node.ip }}:8008
+
+etcd3:
+  hosts:
+{% for n in nodes %}
+    - {{ n.ip }}:2379
+{% endfor %}
+
+bootstrap:
+  dcs:
+    ttl: 60
+    loop_wait: 10
+    retry_timeout: 30
+    maximum_lag_on_failover: 1048576
+    postgresql:
+      use_pg_rewind: true
+      use_slots: true
+      parameters:
+        max_connections: 200
+        shared_buffers: 512MB
+        wal_level: replica
+        hot_standby: 'on'
+        max_wal_senders: 10
+        max_replication_slots: 10
+        wal_log_hints: 'on'
+        tcp_keepalives_idle: 60
+        tcp_keepalives_interval: 10
+        tcp_keepalives_count: 5
+      pg_hba:
+        - host all postgres 127.0.0.1/32 scram-sha-256
+        - host replication replicator 127.0.0.1/32 scram-sha-256
+        - host replication rewind_user 127.0.0.1/32 scram-sha-256
+        - host replication replicator {{ nodes_subnet }} scram-sha-256
+        - host replication rewind_user {{ nodes_subnet }} scram-sha-256
+        - host all all {{ nodes_subnet }} scram-sha-256
+{% for extra in extra_pg_hba %}
+        - {{ extra }}
+{% endfor %}
+  initdb:
+    - encoding: UTF8
+    - data-checksums
+
+postgresql:
+  listen: 0.0.0.0:5432
+  connect_address: {{ node.ip }}:5432
+  data_dir: /var/lib/postgresql/16/patroni
+  bin_dir: /usr/lib/postgresql/16/bin
+  pgpass: /tmp/pgpass
+  authentication:
+    replication:
+      username: replicator
+      password: '{{ replicator_password }}'
+    superuser:
+      username: postgres
+      password: '{{ postgres_password }}'
+    rewind:
+      username: rewind_user
+      password: '{{ rewind_password }}'
+  parameters:
+    unix_socket_directories: '/var/run/postgresql'
