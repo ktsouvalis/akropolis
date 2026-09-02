@@ -27,10 +27,12 @@ class Result:
 
 
 class NodeConn:
-    def __init__(self, node: Node, ssh_cfg: SSHConfig, password: str | None = None):
+    def __init__(self, node: Node, ssh_cfg: SSHConfig, password: str | None = None,
+                 sudo_password: str | None = None):
         self.node = node
         self.cfg = ssh_cfg
         self._password = password
+        self._sudo_password = sudo_password
         self._client: paramiko.SSHClient | None = None
 
     def connect(self, timeout: float = 10.0) -> None:
@@ -61,9 +63,23 @@ class NodeConn:
         if self._client is None:
             self.connect()
         use_sudo = self.cfg.become if sudo is None else sudo
+        feed_sudo_pw = False
         if use_sudo and self.cfg.user != "root":
-            cmd = f"sudo -n -- sh -c {shlex.quote(cmd)}"
-        _stdin, stdout, stderr = self._client.exec_command(cmd, timeout=timeout)  # type: ignore[union-attr]
+            if self._sudo_password:
+                # -S reads the password from stdin; -p '' keeps the prompt out
+                # of stderr; -k forces a fresh authentication so a stale
+                # timestamp can't make the stdin line leak into the command.
+                cmd = f"sudo -S -k -p '' -- sh -c {shlex.quote(cmd)}"
+                feed_sudo_pw = True
+            else:
+                cmd = f"sudo -n -- sh -c {shlex.quote(cmd)}"
+        stdin, stdout, stderr = self._client.exec_command(cmd, timeout=timeout)  # type: ignore[union-attr]
+        if feed_sudo_pw:
+            stdin.write(self._sudo_password + "\n")
+            stdin.flush()
+            # EOF stdin: if the password is wrong, sudo's re-prompt reads EOF
+            # and exits immediately instead of hanging until the SSH timeout.
+            stdin.channel.shutdown_write()
         out = stdout.read().decode(errors="replace")
         err = stderr.read().decode(errors="replace")
         rc = stdout.channel.recv_exit_status()
@@ -73,8 +89,9 @@ class NodeConn:
 class Fleet:
     """All three nodes, connected lazily, iterated in config order."""
 
-    def __init__(self, nodes: list[Node], ssh_cfg: SSHConfig, password: str | None = None):
-        self.conns = [NodeConn(n, ssh_cfg, password) for n in nodes]
+    def __init__(self, nodes: list[Node], ssh_cfg: SSHConfig, password: str | None = None,
+                 sudo_password: str | None = None):
+        self.conns = [NodeConn(n, ssh_cfg, password, sudo_password) for n in nodes]
 
     def __iter__(self):
         return iter(self.conns)

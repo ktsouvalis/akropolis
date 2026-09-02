@@ -66,7 +66,13 @@ def cmd_provision(args: argparse.Namespace) -> int:
     if cfg.ssh.auth == "password":
         password = getpass.getpass(f"SSH password for {cfg.ssh.user}: ")
 
-    fleet = Fleet(cfg.nodes, cfg.ssh, password)
+    sudo_password = None
+    if cfg.ssh.become:
+        sudo_password = getpass.getpass(
+            f"sudo password for {cfg.ssh.user} "
+            "(Enter = reuse SSH password, or passwordless sudo): ") or password
+
+    fleet = Fleet(cfg.nodes, cfg.ssh, password, sudo_password)
     ctx = PhaseContext(cfg=cfg, state=state, fleet=fleet)
 
     if args.replay:

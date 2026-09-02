@@ -105,6 +105,10 @@ ssh:
   user: root                # or a sudo-capable user with become: true
   auth: key                 # key | agent | password (password is prompted, never stored)
   key_file: ~/.ssh/id_ed25519
+  # become: true — escalation via sudo. Passwordless sudo is used when available;
+  # otherwise the sudo password is prompted once per run (fed via sudo -S,
+  # never stored). Passphrase-protected keys: use auth: agent (or key — the
+  # agent is tried first), so the passphrase never reaches akropolis.
 
 nodes:                      # exactly 3; first is bootstrap_leader by default
   - { name: ak-node-1, ip: 10.99.97.71, bootstrap_leader: true }
