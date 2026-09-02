@@ -86,7 +86,7 @@ Every phase runs **plan → confirm → apply → verify**:
 - **apply** does the work, streaming per-node ✔/✘/⚠ check lines.
 - **verify** is a health gate. A phase that applies but fails verify is marked `failed` and **the runner stops** — it never builds on an unhealthy foundation.
 
-Progress is recorded in a per-site state file (see below), so a re-run skips completed phases and resumes at the frontier. Re-running a completed phase (`--replay`) is designed to be a no-op or an explicit, detected change — never a re-bootstrap.
+Progress is recorded in a per-site state file (see below), so a re-run skips completed phases and resumes at the frontier. `--replay PHASE` marks exactly the named phases pending — everything else keeps its done-skip — and is designed to be a no-op or an explicit, detected change, never a re-bootstrap. Preflight is state-aware: on a mid-lifecycle run, ports, containers and the VIP owned by already-completed phases are expected (the VIP check even inverts once nginx-keepalived is done — answering becomes the healthy state), and residual findings like a low-disk reading or the artifacts of a phase being replayed degrade to warnings. A virgin host gets the full strict treatment.
 
 ## Configuration file
 

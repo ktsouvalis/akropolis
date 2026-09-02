@@ -89,7 +89,9 @@ def cmd_provision(args: argparse.Namespace) -> int:
             return 2
 
     try:
-        ok = run_phases(phases, ctx, replay=bool(args.replay or args.only))
+        # --replay works purely by marking the named phases pending above;
+        # only --only bypasses the done-skip (it names phases explicitly).
+        ok = run_phases(phases, ctx, replay=bool(args.only))
     finally:
         fleet.close()
     return 0 if ok else 1
