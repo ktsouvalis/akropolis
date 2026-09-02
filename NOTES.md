@@ -68,3 +68,33 @@ keepalived` and is trivially silenced correctly.
 the fix for #1/#2 in the same edit.
 
 **Status:** OPEN. akropolis template already includes it.
+
+---
+
+## 4. ESDA Lab: verify client-IP visibility behind Traefik
+
+**Found:** 2026-09-02, while adding `network.trusted_proxies` support, refined
+after reviewing the actual Traefik dynamic config (`authentik.yml`): Traefik
+forwards to `https://10.10.255.25` (internal VIP) with `insecureSkipVerify`,
+and appends the real client to `X-Forwarded-For` as standard.
+
+**Nuance:** this is probably NOT fully broken today. nginx's
+`$proxy_add_x_forwarded_for` appends rather than overwrites, and Authentik's
+Go router parses X-Forwarded-For from trusted private-range proxies by
+default — so for EXTERNAL clients the real IP plausibly survives the chain.
+The clearly-degraded pieces are `X-Real-IP` (always Traefik's address) and
+potentially INTERNAL campus clients, where every XFF hop is a private address
+and the trusted-proxy walk can land on the wrong entry.
+
+**Verify:** open recent login events in ESDA Authentik admin — one from an
+external client, one from an internal workstation — and check the recorded
+client IPs against reality.
+
+**Fix if needed:** add to the ESDA nginx.conf http block:
+`set_real_ip_from 192.168.20.20; real_ip_header X-Forwarded-For;
+real_ip_recursive on;` and pass through the upstream X-Forwarded-Proto.
+(Exactly what akropolis's `network.trusted_proxies` renders — an ESDA-style
+site config is `tls.provider: self_signed` + `trusted_proxies:
+[192.168.20.20]`.)
+
+**Status:** OPEN — verify first; external-client path may already be correct.

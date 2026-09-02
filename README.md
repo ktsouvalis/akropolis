@@ -122,6 +122,8 @@ tls:
   # acme:   { directory_url: ..., email: ..., staging: true }
   # import: { fullchain: ./certs/fullchain.pem, privkey: ./certs/privkey.pem }
 
+# network.trusted_proxies: []   # see "Behind an external reverse proxy" below
+
 postgres:
   extra_pg_hba: []          # site-specific lines appended to the generated pg_hba
                             # e.g. "host postgres postgres 10.23.2.50/32 scram-sha-256"
@@ -225,6 +227,20 @@ The last phase, and the only one that touches nothing on the nodes. It writes th
 It then prints the landing card: admin URL, the `akadmin` username, and the bootstrap password — shown **once**, in your terminal, because you need it to log in; change it after first login. Pending-ACME and staging-cert conditions are called out on the card if applicable.
 
 Verify parses the emitted file back and asserts the schema: all top-level keys the monitor expects, a non-empty API token, and 3 nodes in every service group.
+
+## Behind an external reverse proxy
+
+If public TLS is terminated upstream — e.g. a Traefik instance holding a HARICA wildcard, with the cluster reachable only through it — the intended setup is `tls.provider: self_signed`: the internal VIP serves a self-signed cert, and the external proxy forwards to it with certificate verification disabled. Preflight's DNS→VIP check is warn-only for `self_signed`, so a public hostname that resolves to the proxy rather than the VIP does not block.
+
+The part that is easy to get silently wrong in this topology is client identity: without special handling, the cluster's nginx overwrites `X-Real-IP` with the proxy's address and `X-Forwarded-Proto` with its own scheme, so Authentik sees every login as coming from the proxy — poisoning reputation policies, event logs, and GeoIP. Declare the proxy instead:
+
+```yaml
+network:
+  trusted_proxies:
+    - 192.168.20.20        # IPs or CIDRs of the upstream proxy
+```
+
+When set, nginx trusts `X-Forwarded-For` from those addresses (`set_real_ip_from` + `real_ip_recursive`), so real client IPs reach Authentik, and the original `X-Forwarded-Proto` is passed through instead of overwritten (falling back to the local scheme when the header is absent, so direct internal access still works). Only list addresses you actually control — a trusted proxy can assert any client IP it likes.
 
 ## State file & secrets
 

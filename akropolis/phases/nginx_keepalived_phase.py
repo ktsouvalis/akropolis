@@ -116,7 +116,9 @@ class NginxKeepalivedPhase(Phase):
                           tls_enabled=self._tls_enabled(ctx),
                           nodes_subnet=self._subnet(ctx),
                           stub_status_allow=list(
-                              (cfg.raw.get("network") or {}).get("stub_status_allow", []) or []))
+                              (cfg.raw.get("network") or {}).get("stub_status_allow", []) or []),
+                          trusted_proxies=list(
+                              (cfg.raw.get("network") or {}).get("trusted_proxies", []) or []))
             conf_changed = push_file(conn, conf, "/opt/nginx/conf/nginx.conf")
             compose_changed = push_file(conn, compose, "/opt/nginx/docker-compose.yml")
             running = conn.run("docker ps --format '{{.Names}}' | grep -qx nginx").ok
