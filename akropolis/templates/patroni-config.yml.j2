@@ -33,6 +33,7 @@ bootstrap:
         tcp_keepalives_interval: 10
         tcp_keepalives_count: 5
       pg_hba:
+        - local all postgres peer
         - host all postgres 127.0.0.1/32 scram-sha-256
         - host replication replicator 127.0.0.1/32 scram-sha-256
         - host replication rewind_user 127.0.0.1/32 scram-sha-256

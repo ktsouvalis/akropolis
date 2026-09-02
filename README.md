@@ -171,11 +171,11 @@ Guide Step 3, and the phase where the bootstrap order makes or breaks the cluste
 3. Replicas start one at a time, each gated on reaching `role=replica` with `state=running/streaming` before the next begins.
 4. The `authentik` role and database are created on the leader, idempotently.
 
-The rendered `pg_hba` includes the `127.0.0.1/32` replication and rewind entries whose absence has caused silent streaming failures in the field, plus a `host all all <nodes-subnet>/24` line; site-specific lines go in `postgres.extra_pg_hba`. All four passwords (postgres superuser, replicator, rewind, authentik DB) are generated once, pinned in state, and never printed.
+The rendered `pg_hba` starts with `local all postgres peer` — Patroni's DCS-managed pg_hba **replaces** the Debian default wholesale, and without an explicit `local` line, Unix-socket `psql` as postgres (which step 4 and the verify depend on) dies with a `no pg_hba.conf entry for host ""` FATAL. It further includes the `127.0.0.1/32` replication and rewind entries whose absence has caused silent streaming failures in the field, plus a `host all all <nodes-subnet>/24` line; site-specific lines go in `postgres.extra_pg_hba`. All four passwords (postgres superuser, replicator, rewind, authentik DB) are generated once, pinned in state, and never printed.
 
 Two operational facts worth knowing even with automation: live Patroni settings are DCS-owned after bootstrap (change them with `patronictl edit-config`, not by editing the file), and restarting `patroni.service` on the current **leader** is a real failover, not a no-op.
 
-Verify: `patronictl list` shows exactly 1 Leader + 2 replicas, all running/streaming.
+Verify: `patronictl list` shows exactly 1 Leader + 2 replicas, all running/streaming, **and** the `authentik` role and database exist on the leader — the cluster topology can be perfectly green while step 4 failed, so verify checks both.
 
 ### haproxy
 

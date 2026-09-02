@@ -189,4 +189,17 @@ class PatroniPhase(Phase):
                    f"leaders={leaders} replicas={replicas} running-states={running}")
         if not ok and out:
             print(out)
-        return ok
+
+        # The apply step can fail without breaking the cluster topology (seen in
+        # the field: pg_hba rejected the Unix-socket psql, yet patronictl was
+        # green and the phase reported OK). Verify must own the outcome.
+        r_role = leader_conn.run(
+            "sudo -u postgres psql -h /var/run/postgresql -p 5432 -tAc "
+            "\"SELECT 1 FROM pg_roles WHERE rolname='authentik'\"", timeout=60)
+        r_db = leader_conn.run(
+            "sudo -u postgres psql -h /var/run/postgresql -p 5432 -tAc "
+            "\"SELECT 1 FROM pg_database WHERE datname='authentik'\"", timeout=60)
+        app_ok = r_role.out.strip() == "1" and r_db.out.strip() == "1"
+        ctx.record("cluster", "authentik role + database exist", app_ok,
+                   "" if app_ok else (r_role.err or r_db.err or "role/db missing"))
+        return ok and app_ok
