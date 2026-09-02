@@ -78,10 +78,12 @@ class PreflightPhase(Phase):
                 ctx.record(node, f"MTU on {cfg.network.interface}", mtu == cfg.network.expected_mtu,
                            f"{mtu} (expected {cfg.network.expected_mtu})")
 
-            # 4. clock (collected, compared after the loop)
+            # 4. clock — store the OFFSET from our own clock at the moment of
+            # sampling, so sequential collection time cancels out and only
+            # genuine skew remains
             r = conn.run("date +%s")
             if r.ok:
-                clocks[node] = int(r.out)
+                clocks[node] = int(r.out) - time.time()
 
             # 5. disk space on /
             r = conn.run("df --output=avail -BG / | tail -1 | tr -dc 0-9")
@@ -129,11 +131,12 @@ class PreflightPhase(Phase):
                 ctx.record(node, f"MTU path → {other.node.name}", r.ok,
                            f"{payload}B payload, DF set" if r.ok else "fragmentation or no path")
 
-        # clock skew across nodes (uses collected samples; loop time inflates
-        # skew slightly, so the 5s threshold is deliberately generous)
+        # clock skew across nodes: spread of per-node offsets from our clock.
+        # SSH round-trip adds well under a second of noise per sample.
         if len(clocks) >= 2:
             skew = max(clocks.values()) - min(clocks.values())
-            ctx.record("cluster", "clock skew", skew <= 5, f"{skew}s across nodes (≤ 5s)")
+            ctx.record("cluster", "clock skew", skew <= 5,
+                       f"{skew:.1f}s across nodes (≤ 5s)")
 
         # cluster-level checks run from node 1 — skip cleanly if it's unreachable
         first = ctx.fleet.conns[0]
