@@ -20,6 +20,7 @@ from .init_wizard import run_wizard
 from .phases.base import PhaseContext, StubPhase, run_phases
 from .phases.base_setup import BasePhase
 from .phases.etcd_phase import EtcdPhase
+from .phases.haproxy_phase import HAProxyPhase
 from .phases.patroni_phase import PatroniPhase
 from .phases.preflight import PreflightPhase
 from .sshexec import Fleet
@@ -27,14 +28,14 @@ from .state import State
 
 console = Console()
 
-# Ordered phase pipeline. Implemented: preflight, base, etcd, patroni.
+# Ordered phase pipeline. Implemented: preflight, base, etcd, patroni, haproxy.
 # The stubs make the intended shape visible and stop the runner cleanly.
 PIPELINE = [
     PreflightPhase(),
     BasePhase(),
     EtcdPhase(),
     PatroniPhase(),
-    StubPhase("haproxy"),
+    HAProxyPhase(),
     StubPhase("tls"),
     StubPhase("nginx-keepalived"),
     StubPhase("authentik"),

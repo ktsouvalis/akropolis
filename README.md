@@ -18,8 +18,8 @@ akropolis provision config.<site>.yml --only preflight   # read-only, safe anywh
 | phase            | status |
 |------------------|--------|
 | preflight        | ✅ implemented (read-only) |
-| base / etcd / patroni | ✅ implemented (untested against real hosts yet) |
-| haproxy / tls / nginx-keepalived / authentik / handoff | 🚧 stubs |
+| base / etcd / patroni / haproxy | ✅ implemented (untested against real hosts yet) |
+| tls / nginx-keepalived / authentik / handoff | 🚧 stubs |
 
 TLS providers planned: `none` (testing only, refused in production),
 `self_signed`, `acme` (any directory URL — LE, HARICA ACME, ...), `import`
