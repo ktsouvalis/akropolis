@@ -40,6 +40,18 @@ from .base import Phase, PhaseContext, console
 HEALTHY = ("docker inspect -f '{{.State.Health.Status}}' authentik-server-1 "
            "authentik-worker-1 2>/dev/null | sort -u")
 
+# EXACT comparison, never a substring or grep match: "healthy" is a substring
+# of "unhealthy", so `expect="healthy"` and `grep healthy` both report a
+# FAILED container as good. Shell string equality against the deduplicated
+# status list is the only form that cannot lie: it is true only when every
+# named container reports exactly healthy.
+ALL_HEALTHY = f'[ "$({HEALTHY})" = healthy ]'
+
+
+def one_healthy_cmd(container: str) -> str:
+    return ('[ "$(docker inspect -f \'{{.State.Health.Status}}\' '
+            f'{container} 2>/dev/null)" = healthy ]')
+
 
 def wait_healthy(ctx, conn, timeout: float, label: str = "waiting for healthy") -> bool:
     """Gate until BOTH containers report exactly 'healthy', with a live line.
@@ -48,10 +60,8 @@ def wait_healthy(ctx, conn, timeout: float, label: str = "waiting for healthy") 
     """
     node = conn.node.name
     ctx.begin(node, label, f"0s / {int(timeout)}s")
-    ok = wait_for(conn, f"{HEALTHY} | grep -v healthy | wc -l",
-                  expect="0", timeout=timeout, interval=10,
-                  tick=lambda el: ctx.tick(f"{int(el)}s / {int(timeout)}s"))
-    return ok and conn.run(f"{HEALTHY}").out.strip() == "healthy"
+    return wait_for(conn, ALL_HEALTHY, timeout=timeout, interval=10,
+                    tick=lambda el: ctx.tick(f"{int(el)}s / {int(timeout)}s"))
 
 
 def wait_one_healthy(ctx, conn, container: str, timeout: float,
@@ -63,11 +73,8 @@ def wait_one_healthy(ctx, conn, container: str, timeout: float,
     running yet.
     """
     ctx.begin(conn.node.name, label, f"0s / {int(timeout)}s")
-    return wait_for(
-        conn,
-        "docker inspect -f '{{.State.Health.Status}}' " + container + " 2>/dev/null",
-        expect="healthy", timeout=timeout, interval=10,
-        tick=lambda el: ctx.tick(f"{int(el)}s / {int(timeout)}s"))
+    return wait_for(conn, one_healthy_cmd(container), timeout=timeout, interval=10,
+                    tick=lambda el: ctx.tick(f"{int(el)}s / {int(timeout)}s"))
 
 
 def dump_logs(ctx, conn, service: str, lines: int = 40) -> None:

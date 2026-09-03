@@ -278,15 +278,26 @@ class RestorePhase(Phase):
         ctx.record(first.node.name, "worker healthy (migrations complete)", good,
                    "" if good else f"still not healthy after {mig_timeout}s")
         if not good:
+            st = first.run("docker inspect -f '{{.State.Health.Status}}' "
+                           "authentik-worker-1 2>/dev/null").out.strip()
+            ctx.record(first.node.name, "worker health status", False, st or "unknown")
             dump_logs(ctx, first, "worker")
-            raise RuntimeError(
-                "worker never finished migrating the restored database within "
-                f"{mig_timeout}s — raise restore.migration_timeout if the log above "
-                "shows migrations still progressing, otherwise fix the dump")
+            hint = ("still migrating — raise restore.migration_timeout"
+                    if st == "starting" else
+                    "the healthcheck is FAILING, not slow — the log above has the reason")
+            raise RuntimeError(f"worker did not reach healthy within {mig_timeout}s "
+                               f"(status: {st or 'unknown'}) — {hint}")
 
-        ctx.begin(first.node.name, "starting authentik", "server joins migrated schema")
-        r = first.run("cd /opt/authentik && docker compose up -d", timeout=1800)
-        ctx.record(first.node.name, "authentik starting", r.ok, r.err if not r.ok else "")
+        ctx.begin(first.node.name, "starting server", "--no-deps: worker stays up")
+        # --no-deps for the server too. A plain `up -d` re-evaluates the
+        # depends_on graph: it RESTARTS the worker we just gated (health resets
+        # to 'starting') and then waits on it with compose's own short clock —
+        # reintroducing the exact failure this phase exists to avoid. The
+        # worker's health has already been proven above, so the dependency
+        # wait has nothing left to add.
+        r = first.run("cd /opt/authentik && docker compose up -d --no-deps server",
+                      timeout=1800)
+        ctx.record(first.node.name, "server starting", r.ok, r.err if not r.ok else "")
         good = r.ok and wait_healthy(ctx, first, timeout=900)
         ctx.record(first.node.name, "healthy on restored data", good,
                    "" if good else "never reached healthy")

@@ -166,3 +166,32 @@ must not be verified), plus `ports.authentik_worker: 9081`.
 
 **ak-monitor must be taught to read these keys** — emitting them is only half
 the fix. Until then, a tls: none site needs the scheme edited by hand.
+
+
+## Health gate accepted "unhealthy" (Sep 2026) — gate correctness
+
+`wait_one_healthy` (introduced v0.10.3) polled with `expect="healthy"`, a
+SUBSTRING test. `"healthy" in "unhealthy"` is True in Python, so the gate
+reported "worker healthy (migrations complete)" for a container Docker had
+marked **unhealthy**. The phase then tried to start the server, compose
+refused on the dependency condition, and the failure appeared to contradict
+the line printed immediately above it.
+
+The same trap existed in the older pair gate's polling (`grep -v healthy`
+filters out "unhealthy" lines too); it survived only because a separate exact
+`== "healthy"` confirmation ran afterwards.
+
+Both now use shell string equality against the deduplicated status list —
+`[ "$(docker inspect -f '{{.State.Health.Status}}' ... | sort -u)" = healthy ]`
+— which cannot match a substring. Verified against a real shell for healthy /
+unhealthy / starting / empty.
+
+**Rule for this codebase: never test container health with a substring or
+grep match.** A gate that lies is worse than no gate: it moves the failure
+somewhere unrelated and makes the operator distrust correct output.
+
+Second fix in the same version: the server is now started with
+`up -d --no-deps server`. A plain `up -d` re-evaluates depends_on, RESTARTS
+the freshly-gated worker (health resets to "starting") and then waits on it
+with compose's own ~150s clock — reintroducing the exact failure the phase
+exists to avoid.
