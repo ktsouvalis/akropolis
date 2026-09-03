@@ -104,6 +104,10 @@ def run_wizard(output: str | None = None) -> Path:
         email["from"] = _ask("From address", "noreply@" + site)
         authentik_extra["email"] = email
     admin_email = input("akadmin bootstrap email (Enter to skip): ").strip()
+    monitor_ip = _ask("monitoring host IP (allowed through UFW to Patroni/etcd/HAProxy/"
+                      "Authentik ports; Enter to skip)", default="-",
+                      validate=lambda v: None if v == "-" else _valid_ip(v))
+    monitor_ip = "" if monitor_ip == "-" else monitor_ip
 
     cfg = {
         "site": {"name": site, "environment": env},
@@ -119,7 +123,8 @@ def run_wizard(output: str | None = None) -> Path:
                                     **({"email": admin_email} if admin_email else {})},
                       **authentik_extra},
         "secrets": {"source": "prompt"},
-        "monitor": {"emit": True, "output": f"./config.{site}.monitor.yml"},
+        "monitor": {"emit": True, "output": f"./config.{site}.monitor.yml",
+                    **({"ip": monitor_ip} if monitor_ip else {})},
     }
 
     out = Path(output or f"config.{site}.yml")

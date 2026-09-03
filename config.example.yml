@@ -154,6 +154,10 @@ secrets:
 monitor:
   emit: true
   output: ./config.uop-test.monitor.yml
+  # ip: 10.99.97.90               # the ak-monitor host — the base phase adds a UFW rule
+                                  # allowing it to 2379,5000,5001,8008,9000,9443/tcp on
+                                  # every node. Omit → asked interactively (Enter to skip;
+                                  # the answer is pinned in state).
   # Emitted contents: nodes/IPs, VIP, Patroni REST :8008, etcd :2379,
   # HAProxy stats :9000 (csv), Authentik health endpoints, worker check via
   # /api/v3/tasks/workers/, API token, and cert expiry date when provider=import.

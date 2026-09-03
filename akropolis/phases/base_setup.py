@@ -9,8 +9,14 @@ patching policy, not the provisioner); it can be enabled via raw config
 
 from __future__ import annotations
 
+import ipaddress
+
 from ..remote import push_file
 from .base import Phase, PhaseContext
+
+# Everything ak-monitor polls: etcd client, PG via HAProxy (primary/replicas),
+# Patroni REST, HAProxy stats CSV, Authentik health/API.
+MONITOR_PORTS = "2379,5000,5001,8008,9000,9443"
 
 PACKAGES = ("curl wget gnupg2 ca-certificates lsb-release "
             "apt-transport-https software-properties-common "
@@ -24,9 +30,37 @@ APT = "DEBIAN_FRONTEND=noninteractive apt-get -y -qq"
 class BasePhase(Phase):
     name = "base"
 
+    # ------------------------------------------------------------- monitor ip
+    # Resolution: monitor.ip in the site config → interactive prompt, answer
+    # (including the decision to skip, stored as "") pinned in state so a
+    # --replay never re-asks. The monitor host is NOT one of the nodes, so
+    # without this rule UFW's default-deny silently blanks every dashboard
+    # column that isn't plain HTTPS.
+    def _monitor_ip(self, ctx: PhaseContext) -> str:
+        ip = str(((ctx.cfg.raw.get("monitor") or {}).get("ip") or "")).strip()
+        if ip:
+            return ip
+
+        def ask() -> str:
+            while True:
+                v = input("monitoring host IP to allow through UFW "
+                          f"(ports {MONITOR_PORTS}; Enter to skip): ").strip()
+                if not v:
+                    return ""
+                try:
+                    ipaddress.ip_address(v)
+                    return v
+                except ValueError:
+                    print(f"  {v!r} is not a valid IP address")
+
+        return ctx.state.get_or_generate("monitor_ip", ask)
+
     def plan(self, ctx: PhaseContext) -> list[str]:
         cfg = ctx.cfg
         upgrade = bool((cfg.raw.get("base") or {}).get("apt_upgrade", False))
+        # plan must not prompt: show the config value or announce the question
+        mon_ip = str(((cfg.raw.get("monitor") or {}).get("ip") or "")).strip() \
+            or ctx.state.data["generated"].get("monitor_ip", "")
         return [
             f"set hostname on each node ({', '.join(n.name for n in cfg.nodes)})",
             "manage an akropolis-marked block in /etc/hosts with all node entries",
@@ -34,11 +68,15 @@ class BasePhase(Phase):
             "install Docker CE from download.docker.com (keyring + repo + packages)",
             "UFW: default deny incoming / allow outgoing; allow ssh, 80, 443, 9000; "
             "allow all traffic from each node IP; --force enable",
+            (f"UFW: allow monitor host {mon_ip} to ports {MONITOR_PORTS}" if mon_ip else
+             "UFW: no monitor host in config — you will be asked interactively "
+             "(Enter to skip; the answer is pinned in state)"),
         ]
 
     def apply(self, ctx: PhaseContext) -> None:
         cfg = ctx.cfg
         upgrade = bool((cfg.raw.get("base") or {}).get("apt_upgrade", False))
+        mon_ip = self._monitor_ip(ctx)  # may prompt — before any node is touched
 
         hosts_block = "\n".join(f"{n.ip}  {n.name}" for n in cfg.nodes)
 
@@ -94,21 +132,29 @@ systemctl enable --now docker
 
             # UFW (guide 1.4) — ssh rule goes in before enable, always
             allow_from = " && ".join(f"ufw allow from {n.ip} to any" for n in cfg.nodes)
+            monitor_rule = (f" && ufw allow from {mon_ip} to any port {MONITOR_PORTS} "
+                            f"proto tcp comment 'akropolis monitor'" if mon_ip else "")
             script = (
                 "ufw default deny incoming && ufw default allow outgoing && "
                 "ufw allow ssh && ufw allow 80/tcp && ufw allow 443/tcp && "
-                f"{allow_from} && ufw allow 9000/tcp && ufw --force enable"
+                f"{allow_from} && ufw allow 9000/tcp{monitor_rule} && ufw --force enable"
             )
             r = conn.run(script, timeout=120)
-            ctx.record(node, "ufw rules + enable", r.ok, r.err if not r.ok else "")
+            ctx.record(node, "ufw rules + enable"
+                       + (f" (+ monitor {mon_ip})" if mon_ip else ""),
+                       r.ok, r.err if not r.ok else "")
 
     def verify(self, ctx: PhaseContext) -> bool:
         ok = True
+        mon_ip = str(((ctx.cfg.raw.get("monitor") or {}).get("ip") or "")).strip() \
+            or ctx.state.data["generated"].get("monitor_ip", "")
         for conn in ctx.fleet:
             node = conn.node.name
             checks = [
                 ("docker compose available", "docker compose version >/dev/null"),
                 ("ufw active", "ufw status | grep -q 'Status: active'"),
+                *([( "monitor ip in ufw",
+                     f"ufw status | grep -qF {mon_ip}")] if mon_ip else []),
                 ("chrony running", "systemctl is-active chrony >/dev/null"),
                 ("hostname applied", f"test \"$(hostname)\" = {conn.node.name}"),
             ]

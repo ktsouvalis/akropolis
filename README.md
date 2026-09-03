@@ -154,6 +154,8 @@ Checks per node: SSH reachability and root/sudo, OS release (warn if not Ubuntu 
 
 Guide Step 1. Hostname per node, an akropolis-marker-managed block in `/etc/hosts` (removable and re-runnable), baseline packages + chrony, Docker CE from Docker's own repository, and UFW: default deny incoming, allow ssh/80/443/9000 and all traffic between the three node IPs, then `--force enable` (the ssh rule always lands before enable).
 
+The monitoring host gets its own UFW opening: `monitor.ip` in the site config (or an interactive question, answer pinned in state — Enter to skip) is allowed to `2379,5000,5001,8008,9000,9443/tcp` on every node. ak-monitor is not one of the nodes, so without this rule default-deny silently blanks every dashboard column that isn't plain HTTPS — the polls just time out.
+
 `apt upgrade` is deliberately **not** run unless `base.apt_upgrade: true` — package drift belongs to your patching policy, not the provisioner.
 
 Verify: `docker compose` available, UFW active, chrony running, hostname applied — on every node.

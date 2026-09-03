@@ -200,6 +200,17 @@ def load(path: str | Path) -> SiteConfig:
             elif not Path(os.path.expanduser(p)).exists():
                 problems.append(f"tls.import.{k} does not exist: {p}")
 
+    # --- monitor (optional) ---
+    mon_ip = str(_get(raw, "monitor.ip", "") or "").strip()
+    if mon_ip:
+        try:
+            ipaddress.ip_address(mon_ip)
+        except ValueError:
+            problems.append(f"monitor.ip: invalid IP: {mon_ip!r}")
+        if mon_ip in seen_ips:
+            problems.append(f"monitor.ip {mon_ip} collides with a node IP — "
+                            "node IPs are already fully allowed through UFW")
+
     if problems:
         raise ConfigError(problems)
 

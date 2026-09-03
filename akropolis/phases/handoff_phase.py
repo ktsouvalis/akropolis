@@ -92,6 +92,16 @@ class HandoffPhase(Phase):
         console.print(f"  password  : [bold]{gen.get('authentik_bootstrap_password', '?')}[/bold] "
                       "[yellow](shown once — change it after first login)[/yellow]")
         console.print(f"  monitor   : run your monitoring tool with [bold]{out}[/bold]")
+        mon_ip = str(((cfg.raw.get("monitor") or {}).get("ip") or "")).strip() \
+            or gen.get("monitor_ip", "")
+        if mon_ip:
+            console.print(f"  monitor ip: [bold]{mon_ip}[/bold] allowed through UFW "
+                          "(etcd/PG/Patroni/stats/API ports) on every node")
+        else:
+            console.print("  [yellow]NOTE: no monitor IP was allowed through UFW — "
+                          "the monitor's Patroni/etcd/stats columns will show DOWN "
+                          "unless it runs from a node. Set monitor.ip and "
+                          "--replay base.[/yellow]")
         if not cfg.ssh.key_file:
             console.print("  [yellow]NOTE: ssh.key_file was not set in the site config — "
                           f"edit [bold]{out}[/bold] and replace the CHANGE_ME placeholder "
