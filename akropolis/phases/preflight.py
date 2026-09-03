@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import time
 
-from ..config import REQUIRED_FREE_PORTS
+from ..config import REQUIRED_FREE_PORTS, REQUIRED_FREE_PORTS_SINGLE
 from .base import Phase, PhaseContext
 
 # What each completed phase legitimately occupies. Preflight consults the
@@ -21,13 +21,24 @@ PHASE_PORTS: dict[str, set[int]] = {
     "patroni": {5432, 8008},
     "haproxy": {5000, 5001, 9000},
     "nginx-keepalived": {80, 443},
+    "nginx": {80, 443},              # single topology's keepalived-less nginx
     "authentik": {9080, 9081, 9300, 9301, 9443},
 }
 PHASE_CONTAINERS: dict[str, str] = {
     "etcd": "etcd",
     "haproxy": "haproxy",
     "nginx-keepalived": "nginx",
+    "nginx": "nginx",
     "authentik": "authentik",
+}
+
+# Phase names that can legitimately have already run, per topology — used to
+# compute the "expected footprint" a mid-lifecycle preflight should not
+# complain about. Single topology's authentik/nginx phases don't exist yet
+# (next patch); listed here so preflight is forward-compatible once they do.
+PHASES_BY_TOPOLOGY: dict[str, tuple[str, ...]] = {
+    "ha": ("base", "etcd", "patroni", "haproxy", "nginx-keepalived", "authentik", "handoff"),
+    "single": ("base", "authentik", "nginx", "handoff"),
 }
 
 
@@ -38,31 +49,41 @@ class PreflightPhase(Phase):
     # ------------------------------------------------------------------ plan
     def plan(self, ctx: PhaseContext) -> list[str]:
         cfg = ctx.cfg
+        ports = REQUIRED_FREE_PORTS if cfg.topology == "ha" else REQUIRED_FREE_PORTS_SINGLE
         lines = [
-            f"SSH to {len(cfg.nodes)} nodes as {cfg.ssh.user!r} (auth: {cfg.ssh.auth}) and run read-only checks:",
+            f"SSH to {len(cfg.nodes)} node(s) as {cfg.ssh.user!r} (auth: {cfg.ssh.auth}) and run read-only checks:",
             "reachability + sudo, OS release, interface "
             f"{cfg.network.interface!r} exists with MTU {cfg.network.expected_mtu}",
             f"clock skew across nodes ≤ 5s, ≥ 20 GB free on /",
-            f"required ports free: {', '.join(map(str, REQUIRED_FREE_PORTS))}",
-            f"VIP {cfg.network.vip} is unclaimed",
-            "inter-node MTU path (ping with DF bit at expected MTU)",
+            f"required ports free: {', '.join(map(str, ports))}",
         ]
+        if cfg.topology == "ha":
+            lines.append(f"VIP {cfg.network.vip} is unclaimed")
+            lines.append("inter-node MTU path (ping with DF bit at expected MTU)")
         if cfg.refuse_existing:
-            lines.append("REFUSE any node with existing cluster artifacts (/etc/patroni, ak containers, keepalived)")
-        lines.append("state-aware: footprint of already-completed phases (ports, containers, VIP) is expected, not a failure")
-        if cfg.tls.provider == "acme":
-            lines.append(f"DNS: {cfg.tls.hostname} must resolve to the VIP (hard requirement for ACME)")
-        elif cfg.tls.provider in ("self_signed", "import"):
-            lines.append(f"DNS: {cfg.tls.hostname} resolving to the VIP (warning only for {cfg.tls.provider})")
+            artifacts = "/etc/patroni, ak containers, keepalived" if cfg.topology == "ha" \
+                else "ak containers (authentik/postgres)"
+            lines.append(f"REFUSE any node with existing cluster artifacts ({artifacts})")
+        lines.append("state-aware: footprint of already-completed phases (ports, containers"
+                     + (", VIP" if cfg.topology == "ha" else "") + ") is expected, not a failure")
+        if cfg.topology == "ha":
+            if cfg.tls.provider == "acme":
+                lines.append(f"DNS: {cfg.tls.hostname} must resolve to the VIP (hard requirement for ACME)")
+            elif cfg.tls.provider in ("self_signed", "import"):
+                lines.append(f"DNS: {cfg.tls.hostname} resolving to the VIP (warning only for {cfg.tls.provider})")
+        elif cfg.tls.provider != "none" and cfg.tls.hostname:
+            note = "hard requirement" if cfg.tls.provider == "acme" else "warning only"
+            lines.append(f"DNS: {cfg.tls.hostname} resolves to *something* ({note}) — NAT means "
+                        "akropolis cannot verify it resolves to THIS node's public IP; check that by hand")
         return lines
 
     # ----------------------------------------------------------------- apply
     def apply(self, ctx: PhaseContext) -> None:
         cfg = ctx.cfg
         clocks: dict[str, int] = {}
+        required_ports = REQUIRED_FREE_PORTS if cfg.topology == "ha" else REQUIRED_FREE_PORTS_SINGLE
 
-        done = {p for p in ("base", "etcd", "patroni", "haproxy",
-                            "nginx-keepalived", "authentik", "handoff")
+        done = {p for p in PHASES_BY_TOPOLOGY[cfg.topology]
                 if ctx.state.phase_status(p) == "done"}
         midlife = bool(done)  # some phase completed — we own these hosts now
         expected_ports: set[int] = set()
@@ -133,8 +154,8 @@ class PreflightPhase(Phase):
                     listening.add(int(addr.rsplit(":", 1)[-1]))
                 except ValueError:
                     pass
-            occupied = sorted((set(REQUIRED_FREE_PORTS) & listening) - expected_ports)
-            owned = sorted(set(REQUIRED_FREE_PORTS) & listening & expected_ports)
+            occupied = sorted((set(required_ports) & listening) - expected_ports)
+            owned = sorted(set(required_ports) & listening & expected_ports)
             detail = f"occupied: {occupied}" if occupied else "all free"
             if owned:
                 detail += f" (ignoring {owned} — owned by completed phases)"
@@ -188,31 +209,49 @@ class PreflightPhase(Phase):
                        f"skipped — {first.node.name} unreachable")
             return
 
-        # VIP: unclaimed before nginx-keepalived has run; answering after
-        try:
-            r = first.run(f"ping -c 1 -W 1 {cfg.network.vip}")
-            if "nginx-keepalived" in done:
-                ctx.record("cluster", "VIP owned by cluster", r.ok,
-                           "answering (good — keepalived deployed)" if r.ok
-                           else f"{cfg.network.vip} not answering — keepalived unhealthy?")
-            else:
-                ctx.record("cluster", "VIP unclaimed", not r.ok,
-                           "no reply (good)" if not r.ok
-                           else f"{cfg.network.vip} is answering — something owns it")
-        except Exception as exc:  # noqa: BLE001
-            ctx.record("cluster", "VIP check", False, str(exc), warn=True)
-
-        # DNS → VIP
-        if cfg.tls.provider != "none" and cfg.tls.hostname:
-            hard = cfg.tls.provider == "acme"
+        if cfg.topology == "ha":
+            # VIP: unclaimed before nginx-keepalived has run; answering after
             try:
-                r = first.run(f"getent ahostsv4 {cfg.tls.hostname} | awk '{{print $1}}' | sort -u")
-                resolved = r.out.splitlines() if r.ok else []
-                ok = cfg.network.vip in resolved
-                ctx.record("cluster", f"DNS {cfg.tls.hostname} → VIP", ok,
-                           f"resolves to {resolved or 'nothing'}", warn=(not ok and not hard))
+                r = first.run(f"ping -c 1 -W 1 {cfg.network.vip}")
+                if "nginx-keepalived" in done:
+                    ctx.record("cluster", "VIP owned by cluster", r.ok,
+                               "answering (good — keepalived deployed)" if r.ok
+                               else f"{cfg.network.vip} not answering — keepalived unhealthy?")
+                else:
+                    ctx.record("cluster", "VIP unclaimed", not r.ok,
+                               "no reply (good)" if not r.ok
+                               else f"{cfg.network.vip} is answering — something owns it")
             except Exception as exc:  # noqa: BLE001
-                ctx.record("cluster", f"DNS {cfg.tls.hostname} → VIP", False, str(exc), warn=not hard)
+                ctx.record("cluster", "VIP check", False, str(exc), warn=True)
+
+            # DNS → VIP
+            if cfg.tls.provider != "none" and cfg.tls.hostname:
+                hard = cfg.tls.provider == "acme"
+                try:
+                    r = first.run(f"getent ahostsv4 {cfg.tls.hostname} | awk '{{print $1}}' | sort -u")
+                    resolved = r.out.splitlines() if r.ok else []
+                    ok = cfg.network.vip in resolved
+                    ctx.record("cluster", f"DNS {cfg.tls.hostname} → VIP", ok,
+                               f"resolves to {resolved or 'nothing'}", warn=(not ok and not hard))
+                except Exception as exc:  # noqa: BLE001
+                    ctx.record("cluster", f"DNS {cfg.tls.hostname} → VIP", False, str(exc), warn=not hard)
+
+        else:
+            # single: no VIP to check against. NAT (public IP → this node's
+            # private IP via pfsense) means akropolis has no reliable way to
+            # confirm the hostname resolves to *this* node from here — so it
+            # only confirms the hostname resolves to something at all, and
+            # says so plainly rather than pretending to verify more than it can.
+            if cfg.tls.provider != "none" and cfg.tls.hostname:
+                hard = cfg.tls.provider == "acme"
+                try:
+                    r = first.run(f"getent ahostsv4 {cfg.tls.hostname} | awk '{{print $1}}' | sort -u")
+                    resolved = r.out.splitlines() if r.ok else []
+                    ctx.record("cluster", f"DNS {cfg.tls.hostname} resolves", bool(resolved),
+                               f"resolves to {resolved or 'nothing'} — NAT: verify this is the "
+                               "right target by hand", warn=(not resolved and not hard))
+                except Exception as exc:  # noqa: BLE001
+                    ctx.record("cluster", f"DNS {cfg.tls.hostname} resolves", False, str(exc), warn=not hard)
 
     # ---------------------------------------------------------------- verify
     def verify(self, ctx: PhaseContext) -> bool:

@@ -39,8 +39,9 @@ No Redis: Authentik ≥ 2025.10 keeps sessions, cache, tasks, and WebSocket stat
 | restore | ✅ implemented (optional — skipped unless `restore.sql_file` is set) |
 | handoff | ✅ implemented, tested (emits the real ak-monitor schema) |
 | `akropolis monitor` | 🚧 stub (will fold in ak-monitor) |
+| `site.topology: single` | 🚧 in progress — preflight + base done; authentik (postgres-in-container) and nginx (no keepalived) phases next |
 
-**The provisioning pipeline is complete** — every phase from preflight to handoff is implemented. First full run against real VMs is the remaining milestone.
+**The 3-node HA provisioning pipeline is complete** — every phase from preflight to handoff is implemented. First full run against real VMs is the remaining milestone. A single-node topology (no VIP, PostgreSQL as a plain container, intended as a production-fallback instance) is being scaffolded alongside it — see `site.topology` in the configuration reference.
 
 ## Install
 
@@ -104,6 +105,8 @@ site:
   name: uop-test            # used in state, prompts, emitted monitor config
   environment: lab          # lab | production (production hardens confirmations,
                             #                   refuses tls provider "none")
+  # topology: ha            # ha (default, 3 nodes below) | single (1 node, no VIP,
+                            #   PostgreSQL as a container — see "Topology" below)
 provision:
   state_file: .state/uop-test.json
   refuse_existing: true     # preflight hard-fails on hosts that already carry a cluster
@@ -255,6 +258,38 @@ It then prints the landing card: admin URL, the `akadmin` username, and the boot
 
 Verify parses the emitted file back and asserts the schema: all top-level keys the monitor expects, a non-empty API token, and 3 nodes in every service group.
 
+## Topology: HA vs single-node
+
+`site.topology` picks which phases run. It defaults to `ha` (the 3-node stack
+documented above) and is the only thing most of this README assumes. Setting
+it to `single` changes the shape of the pipeline, not just its size:
+
+- **1 node, not 3** — `nodes:` takes exactly one entry.
+- **No VIP, no keepalived** — nothing to fail over to. `network.vip` is
+  neither required nor validated.
+- **No etcd, no Patroni, no HAProxy** — PostgreSQL runs as a plain
+  `postgres:16-alpine` container instead of a bare-metal Patroni-managed
+  instance; there is no leader to route to.
+- **nginx still terminates TLS locally** (`tls.provider` works exactly as in
+  `ha`) — a single node is meant to stand on its own behind a NAT (public IP
+  → private IP, 1:1) rather than depend on an external reverse proxy, so
+  akropolis owns TLS termination here too, just without keepalived.
+- **A different default `authentik.tag`**: `ha` stays pinned to `2026.5.6`
+  (2026.8.0 hit a multi-node embedded-outpost restart loop — see
+  NOTES.md); `single` defaults to `2026.8.1`, since a single node has no
+  multi-node outpost topology to trigger that bug. Set `authentik.tag`
+  explicitly to override either default.
+- **Required free ports** drop to `80, 443, 9080, 9081, 9300, 9301, 9443` —
+  no etcd/Patroni/HAProxy ports, since PostgreSQL never leaves the internal
+  Docker network.
+
+Intended use: a fallback instance to bring up quickly if the HA cluster is
+down, not a smaller HA cluster. `preflight` and `base` are implemented and
+adapt to `single` today (port list, UFW rules, no VIP/inter-node checks); the
+`authentik` (postgres-in-container + server + worker) and `nginx`
+(TLS-terminating, no keepalived) phases, plus a single-node-aware `clean`,
+are next.
+
 ## Cleaning a site
 
 `akropolis clean config.<site>.yml` tears the whole stack back down to bare VMs — the inverse of the pipeline, for test iteration. Teardown runs in reverse build order (keepalived/VIP first, so nothing routes traffic at a cluster being dismantled; database before its DCS): keepalived → nginx → authentik → haproxy → patroni + **all** PostgreSQL data → etcd + data → TLS material (letsencrypt, webroot, the certbot distribution key and its authorized_keys line) → UFW reset with ssh re-allowed *before* re-enable → the `/etc/hosts` block → restore-dump leftovers in `/tmp`. Packages (docker, postgresql-16, keepalived, certbot) and the hostname are deliberately left alone — apt state belongs to your patching policy, and removing data and config is what makes the next `provision` honest.
@@ -293,7 +328,7 @@ Security posture, stated plainly:
 
 ## Roadmap
 
-handoff (emit the monitor's config, print the admin URL) → fold in the monitoring TUI as `akropolis monitor` → encrypted state secrets → Greek edition of this guide.
+single-node topology (`site.topology: single` — authentik + nginx phases, then `clean`) → fold in the monitoring TUI as `akropolis monitor` → encrypted state secrets.
 
 ## License
 

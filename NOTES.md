@@ -200,6 +200,46 @@ replacement under a running Patroni).
 does not mention, so this cannot silently recur.
 
 
+## Single-node topology: scaffolding (Sep 2026)
+
+First slice of `site.topology: single` — config validation, `preflight`,
+`base`. Kept deliberately separate from the HA phases rather than sprinkling
+`if topology == "ha"` through them everywhere; `config.py` and `preflight.py`
+each hold exactly one topology branch, `base_setup.py` two (UFW rule set,
+monitor port list).
+
+A few decisions worth recording:
+
+- **Different default `authentik.tag` per topology, not one shared default.**
+  `ha` stays on `2026.5.6` (multi-node embedded-outpost restart loop on
+  2026.8.0). `single` has no multi-node outpost topology to trigger that bug,
+  so it defaults to `2026.8.1` instead of inheriting the HA pin. Explicit
+  `authentik.tag` in the site config still wins either way.
+- **No external reverse-proxy network.** An early sketch had single-node
+  Authentik sit behind an existing reverse-proxy Docker network (the pattern
+  the current hand-built `auth-tmp` instance uses, itself only there because
+  that host doubles as a general-purpose test box). The actual target
+  deployment is a dedicated VM reachable by 1:1 NAT (public IP → node's
+  private IP via pfsense) with nothing upstream — so akropolis has to own TLS
+  termination itself here too. nginx is still part of the single-node
+  pipeline; keepalived is not, since there is nothing to fail over to.
+- **DNS→VIP becomes DNS→"resolves at all."** The HA preflight's DNS check
+  confirms the hostname resolves to the VIP specifically. Single-node has no
+  VIP, and NAT means akropolis running on the node itself has no reliable way
+  to confirm the hostname resolves to *this* node's public IP rather than
+  something else entirely. Rather than fake a check it can't actually make,
+  preflight only confirms the hostname resolves to something, and says so —
+  the operator is expected to verify the target by hand.
+- **Required free ports drop out entirely**, not just get shorter: no
+  etcd/Patroni/HAProxy ports at all, because PostgreSQL is a container on an
+  internal Docker network and is never published to the host.
+
+Still to do: the `authentik` phase itself (postgres-in-container + server +
+worker, generated `.env`/compose derived from a real running `auth-tmp`
+instance's files), a keepalived-less `nginx` phase, and a single-node-aware
+`clean` (different on-disk paths — no `/etc/patroni`, no `/opt/haproxy`).
+
+
 ## Branding is two halves, not one (Sep 2026)
 
 Noticed while testing a restore against a populated database: the logo only

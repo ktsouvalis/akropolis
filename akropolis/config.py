@@ -16,9 +16,23 @@ import yaml
 VALID_ENVIRONMENTS = {"lab", "production"}
 VALID_TLS_PROVIDERS = {"none", "self_signed", "acme", "import"}
 VALID_SSH_AUTH = {"key", "agent", "password"}
+VALID_TOPOLOGIES = {"ha", "single"}
+
+# Default Authentik image tag per topology. Kept separate deliberately: the
+# 3-node HA cluster stays pinned to 2026.5.6 (2026.8.0 hit an embedded-outpost
+# restart loop specific to multi-node deployments — see akropolis NOTES.md /
+# the HA guide changelog); a single node has no multi-node outpost topology
+# to trigger that bug, so it can run current.
+DEFAULT_AUTHENTIK_TAG = {"ha": "2026.5.6", "single": "2026.8.1"}
 
 # Ports that must be free on every node before provisioning (SSH excluded).
+# HA: full stack (etcd, Patroni, HAProxy, nginx+keepalived, Authentik).
 REQUIRED_FREE_PORTS = [80, 443, 2379, 2380, 5432, 5000, 5001, 8008, 9000, 9080, 9081, 9300, 9301, 9443]
+# single: no etcd/Patroni/HAProxy at all — PostgreSQL is a container on an
+# internal Docker network, never published to the host. Only nginx (TLS
+# termination, no keepalived — one node, nothing to fail over to) and
+# Authentik's own listeners need host ports.
+REQUIRED_FREE_PORTS_SINGLE = [80, 443, 9080, 9081, 9300, 9301, 9443]
 
 
 class ConfigError(Exception):
@@ -66,6 +80,7 @@ class TLSConfig:
 class SiteConfig:
     name: str
     environment: str
+    topology: str
     nodes: list[Node]
     ssh: SSHConfig
     network: NetworkConfig
@@ -107,11 +122,18 @@ def load(path: str | Path) -> SiteConfig:
     if environment not in VALID_ENVIRONMENTS:
         problems.append(f"site.environment must be one of {sorted(VALID_ENVIRONMENTS)}, got {environment!r}")
 
+    topology = _get(raw, "site.topology", "ha")
+    if topology not in VALID_TOPOLOGIES:
+        problems.append(f"site.topology must be one of {sorted(VALID_TOPOLOGIES)}, got {topology!r}")
+        topology = "ha"  # fall back so the rest of validation has something to check against
+
     # --- nodes ---
     nodes_raw = raw.get("nodes") or []
     nodes: list[Node] = []
-    if len(nodes_raw) != 3:
-        problems.append(f"exactly 3 nodes are required, got {len(nodes_raw)}")
+    expected_node_count = 1 if topology == "single" else 3
+    if len(nodes_raw) != expected_node_count:
+        problems.append(f"topology {topology!r} requires exactly {expected_node_count} "
+                        f"node(s), got {len(nodes_raw)}")
     seen_ips: set[str] = set()
     for i, n in enumerate(nodes_raw):
         nname = n.get("name") or f"node-{i + 1}"
@@ -155,24 +177,27 @@ def load(path: str | Path) -> SiteConfig:
         vrrp_router_id=int(_get(raw, "network.vrrp.router_id", 51)),
         check_l2_adjacency=bool(_get(raw, "network.check_l2_adjacency", True)),
     )
-    try:
-        vip_addr = ipaddress.ip_address(net.vip)
-        for n in nodes:
-            try:
-                node_addr = ipaddress.ip_address(n.ip)
-                # crude but useful: same /24 as the VIP → VRRP plausible
-                if isinstance(vip_addr, ipaddress.IPv4Address) and isinstance(node_addr, ipaddress.IPv4Address):
-                    if vip_addr.packed[:3] != node_addr.packed[:3]:
-                        problems.append(
-                            f"VIP {net.vip} and node {n.name} ({n.ip}) are not in the same /24 — "
-                            f"VRRP requires L2 adjacency; double-check this is intentional"
-                        )
-            except ValueError:
-                pass
-    except ValueError:
-        problems.append(f"network.vip: invalid or placeholder IP: {net.vip!r}")
-    if net.vip in seen_ips:
-        problems.append(f"network.vip {net.vip} collides with a node IP")
+    # VIP / VRRP only apply to the HA topology — a single node has nothing to
+    # fail over to, so network.vip is neither required nor validated here.
+    if topology == "ha":
+        try:
+            vip_addr = ipaddress.ip_address(net.vip)
+            for n in nodes:
+                try:
+                    node_addr = ipaddress.ip_address(n.ip)
+                    # crude but useful: same /24 as the VIP → VRRP plausible
+                    if isinstance(vip_addr, ipaddress.IPv4Address) and isinstance(node_addr, ipaddress.IPv4Address):
+                        if vip_addr.packed[:3] != node_addr.packed[:3]:
+                            problems.append(
+                                f"VIP {net.vip} and node {n.name} ({n.ip}) are not in the same /24 — "
+                                f"VRRP requires L2 adjacency; double-check this is intentional"
+                            )
+                except ValueError:
+                    pass
+        except ValueError:
+            problems.append(f"network.vip: invalid or placeholder IP: {net.vip!r}")
+        if net.vip in seen_ips:
+            problems.append(f"network.vip {net.vip} collides with a node IP")
 
     # --- tls ---
     tls = TLSConfig(
@@ -219,12 +244,13 @@ def load(path: str | Path) -> SiteConfig:
     return SiteConfig(
         name=name,
         environment=environment,
+        topology=topology,
         nodes=nodes,
         ssh=ssh,
         network=net,
         tls=tls,
         state_file=state_file,
         refuse_existing=bool(_get(raw, "provision.refuse_existing", True)),
-        authentik_tag=str(_get(raw, "authentik.tag", "2026.5.6")),
+        authentik_tag=str(_get(raw, "authentik.tag", DEFAULT_AUTHENTIK_TAG[topology])),
         raw=raw,
     )

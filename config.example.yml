@@ -14,6 +14,12 @@ site:
                                   #   production: every apply phase requires typing the
                                   #   site name to confirm; --force is ignored.
   description: "UoP throwaway test cluster (VLAN 700)"
+  # topology: ha                  # ha (default) | single
+                                  #   ha: the 3-node stack below (etcd/Patroni/HAProxy/
+                                  #   nginx+keepalived). single: one node, no VIP,
+                                  #   PostgreSQL as a plain container — see `nodes:` below.
+                                  #   Changes exactly-3 → exactly-1 node requirement,
+                                  #   default authentik.tag, and required free ports.
 
 # Provisioner behavior
 provision:
@@ -44,7 +50,7 @@ base:
                                   # libraries under a running Patroni (see NOTES.md).
 
 # ---------------------------------------------------------------------------
-# Nodes — exactly 3
+# Nodes — exactly 3 for topology: ha, exactly 1 for topology: single
 # ---------------------------------------------------------------------------
 nodes:
   - name: ak-node-1
@@ -149,7 +155,11 @@ tls:
 # Authentik
 # ---------------------------------------------------------------------------
 authentik:
-  tag: "2026.5.6"
+  # tag: "2026.5.6"                # optional — default depends on site.topology:
+                                   #   ha → 2026.5.6 (2026.8.0 hit a multi-node embedded-
+                                   #   outpost restart loop, see NOTES.md); single → 2026.8.1
+                                   #   (no multi-node outpost topology to trigger it).
+                                   #   Set explicitly to override either default.
   # AUTHENTIK_SECRET_KEY: generated once, recorded encrypted in state, identical on all nodes
   # Listen ports pinned off HAProxy's 9000 (guide 7.x): http 9080 / https 9443 / metrics 9300
   bootstrap:

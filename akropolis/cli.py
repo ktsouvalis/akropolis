@@ -1,4 +1,4 @@
-"""akropolis — provision and monitor a 3-node Authentik HA cluster.
+"""akropolis — provision and monitor an Authentik cluster (3-node HA or single-node).
 
     akropolis init                      # interactive wizard → config.<site>.yml
     akropolis provision config.yml      # phase runner (resumable)
@@ -35,8 +35,13 @@ from .state import State
 
 console = Console()
 
-# Ordered phase pipeline — all phases implemented.
-PIPELINE = [
+# Ordered phase pipeline — topology-dependent. `ha` is the full 3-node stack;
+# `single` drops etcd/Patroni/HAProxy/keepalived entirely (see config.py
+# DEFAULT_AUTHENTIK_TAG / REQUIRED_FREE_PORTS_SINGLE for the reasoning).
+# NOTE: the single-node authentik/nginx phases land in the next patch — until
+# then `site.topology: single` is accepted by config/preflight/base but has
+# nothing to run past base.
+PIPELINE_HA = [
     PreflightPhase(),
     BasePhase(),
     EtcdPhase(),
@@ -48,6 +53,14 @@ PIPELINE = [
     RestorePhase(),   # no-op unless restore.sql_file is set
     HandoffPhase(),
 ]
+PIPELINE_SINGLE = [
+    PreflightPhase(),
+    BasePhase(),
+]
+
+
+def pipeline_for(topology: str) -> list:
+    return PIPELINE_SINGLE if topology == "single" else PIPELINE_HA
 
 
 def cmd_init(args: argparse.Namespace) -> int:
@@ -84,9 +97,10 @@ def cmd_provision(args: argparse.Namespace) -> int:
         for name in args.replay:
             state.mark_phase(name, "pending")
 
-    phases = PIPELINE
+    pipeline = pipeline_for(cfg.topology)
+    phases = pipeline
     if args.only:
-        phases = [p for p in PIPELINE if p.name in args.only]
+        phases = [p for p in pipeline if p.name in args.only]
         missing = set(args.only) - {p.name for p in phases}
         if missing:
             console.print(f"[red]unknown phase(s): {', '.join(sorted(missing))}[/red]")
