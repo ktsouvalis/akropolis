@@ -249,6 +249,12 @@ It then prints the landing card: admin URL, the `akadmin` username, and the boot
 
 Verify parses the emitted file back and asserts the schema: all top-level keys the monitor expects, a non-empty API token, and 3 nodes in every service group.
 
+## Cleaning a site
+
+`akropolis clean config.<site>.yml` tears the whole stack back down to bare VMs — the inverse of the pipeline, for test iteration. Teardown runs in reverse build order (keepalived/VIP first, so nothing routes traffic at a cluster being dismantled; database before its DCS): keepalived → nginx → authentik → haproxy → patroni + **all** PostgreSQL data → etcd + data → TLS material (letsencrypt, webroot, the certbot distribution key and its authorized_keys line) → UFW reset with ssh re-allowed *before* re-enable → the `/etc/hosts` block → restore-dump leftovers in `/tmp`. Packages (docker, postgresql-16, keepalived, certbot) and the hostname are deliberately left alone — apt state belongs to your patching policy, and removing data and config is what makes the next `provision` honest.
+
+Destruction earns the typed-site-name gate in *every* environment, not just production; `site.environment: production` is refused outright unless `--i-know-this-is-production` is also given. The local state file is archived to `.state/<site>.json.cleaned-<timestamp>` (0600 — the pinned secrets are your paper trail) and removed, so the next provision regenerates every secret and preflight's `refuse_existing` passes on a genuinely blank slate. Cleaning a half-built node — exactly what a failed provision leaves behind — is a supported case: every step is idempotent.
+
 ## Behind an external reverse proxy
 
 If public TLS is terminated upstream — e.g. a Traefik instance holding a HARICA wildcard, with the cluster reachable only through it — the intended setup is `tls.provider: self_signed`: the internal VIP serves a self-signed cert, and the external proxy forwards to it with certificate verification disabled. Preflight's DNS→VIP check is warn-only for `self_signed`, so a public hostname that resolves to the proxy rather than the VIP does not block.

@@ -3,6 +3,7 @@
     akropolis init                      # interactive wizard → config.<site>.yml
     akropolis provision config.yml      # phase runner (resumable)
     akropolis provision config.yml --replay preflight
+    akropolis clean     config.yml      # tear the site down to bare VMs
     akropolis monitor   config.yml      # (stub — folds in ak-monitor later)
 """
 
@@ -20,6 +21,7 @@ from .init_wizard import run_wizard
 from .phases.base import PhaseContext, run_phases
 from .phases.authentik_phase import AuthentikPhase
 from .phases.base_setup import BasePhase
+from .phases.clean_phase import CleanPhase
 from .phases.etcd_phase import EtcdPhase
 from .phases.handoff_phase import HandoffPhase
 from .phases.haproxy_phase import HAProxyPhase
@@ -99,6 +101,55 @@ def cmd_provision(args: argparse.Namespace) -> int:
     return 0 if ok else 1
 
 
+def cmd_clean(args: argparse.Namespace) -> int:
+    try:
+        cfg = load(args.config)
+    except ConfigError as exc:
+        console.print("[red]config problems:[/red]")
+        for p in exc.problems:
+            console.print(f"  ✘ {p}")
+        return 2
+
+    if cfg.environment == "production" and not args.i_know_this_is_production:
+        console.print("[red]refusing to clean a production site.[/red] If this really "
+                      "is a teardown of production, add --i-know-this-is-production.")
+        return 2
+
+    state = State(cfg.state_file, cfg.name)
+    password = None
+    if cfg.ssh.auth == "password":
+        password = getpass.getpass(f"SSH password for {cfg.ssh.user}: ")
+    sudo_password = None
+    if cfg.ssh.become:
+        hint = ("Enter = reuse SSH password" if password
+                else "Enter = try passwordless sudo")
+        sudo_password = getpass.getpass(
+            f"sudo password for {cfg.ssh.user} ({hint}): ") or password
+
+    fleet = Fleet(cfg.nodes, cfg.ssh, password, sudo_password)
+    ctx = PhaseContext(cfg=cfg, state=state, fleet=fleet)
+    phase = CleanPhase()
+
+    console.rule("clean")
+    console.print("[bold]plan:[/bold]")
+    for line in phase.plan(ctx):
+        console.print(f"  • {line}")
+    # destruction earns the typed-name gate in EVERY environment
+    console.print(f"[bold red]type the site name to tear it down:[/bold red]")
+    if input("> ").strip() != cfg.name:
+        console.print("[yellow]not confirmed — nothing touched.[/yellow]")
+        fleet.close()
+        return 1
+
+    try:
+        phase.apply(ctx)
+        ok = phase.verify(ctx)
+    finally:
+        ctx.end_status()
+        fleet.close()
+    return 0 if ok else 1
+
+
 def cmd_monitor(args: argparse.Namespace) -> int:
     console.print("[yellow]monitor: not folded in yet.[/yellow] For now run ak-monitor "
                   "with the emitted config from the handoff phase.")
@@ -122,6 +173,13 @@ def main(argv: list[str] | None = None) -> int:
     p_prov.add_argument("--only", nargs="+", metavar="PHASE",
                         help="run only the named phase(s), e.g. --only preflight")
     p_prov.set_defaults(func=cmd_provision)
+
+    p_clean = sub.add_parser("clean", help="tear the site down to bare VMs "
+                             "(reverse build order; typed site-name confirmation)")
+    p_clean.add_argument("config", help="path to config.<site>.yml")
+    p_clean.add_argument("--i-know-this-is-production", action="store_true",
+                         help="required additionally when site.environment is production")
+    p_clean.set_defaults(func=cmd_clean)
 
     p_mon = sub.add_parser("monitor", help="run the monitor (stub)")
     p_mon.add_argument("config", help="path to config.<site>.yml")
