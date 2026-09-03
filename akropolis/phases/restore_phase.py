@@ -12,15 +12,21 @@ every step is gated:
 
   1. locate the CURRENT Patroni leader via REST /primary on each node — the
      leader may have moved since bootstrap; assuming node-1 would psql a replica
-  2. stop authentik on ALL nodes (`docker compose down`) — no live connections,
+  2. check the dump's `SET <guc>` header against the target server's
+     pg_settings BEFORE anything destructive — a dump from a newer pg_dump
+     carries GUCs an older server rejects (pg_dump 17 → PostgreSQL 16 emits
+     `SET transaction_timeout = 0;`), and discovering that after the DROP
+     would leave the cluster down on an empty database. Unknown GUCs are
+     stripped from the header at load time; nothing else is filtered.
+  3. stop authentik on ALL nodes (`docker compose down`) — no live connections,
      no half-written sessions during the swap
-  3. SFTP the dump to the leader (base64 push is unusable at dump sizes),
+  4. SFTP the dump to the leader (base64 push is unusable at dump sizes),
      verify sha256 end-to-end
-  4. DROP DATABASE ... WITH (FORCE) + CREATE ... OWNER authentik, then
+  5. DROP DATABASE ... WITH (FORCE) + CREATE ... OWNER authentik, then
      `psql -v ON_ERROR_STOP=1` the dump in — any error stops the phase with
      authentik still down, never half-up on half-data
-  5. delete the dump from the node (it contains every secret the IdP holds)
-  6. start authentik back exactly like a bootstrap: leader alone first, health
+  6. delete the dump from the node (it contains every secret the IdP holds)
+  7. start authentik back exactly like a bootstrap: leader alone first, health
      gate covering any migrations the server applies on top of the restored
      schema (dump from an older tag), then the other nodes one at a time
 
@@ -31,6 +37,7 @@ recorded in state for the paper trail.
 
 from __future__ import annotations
 
+import gzip
 import hashlib
 import re
 import shlex
@@ -69,6 +76,45 @@ class RestorePhase(Phase):
                 return conn
         return None
 
+    # ------------------------------------------------------- version skew
+    # pg_dump writes a header of `SET <guc> = ...;` lines reflecting the
+    # version of the DUMPING binary. Restoring into an older major version
+    # fails on the first GUC that version doesn't know — e.g. a pg_dump 17
+    # dump carries `SET transaction_timeout = 0;`, which PostgreSQL 16
+    # rejects outright ("unrecognized configuration parameter").
+    #
+    # This is pure version skew, not data: the fix is to drop those lines.
+    # They are identified by ASKING THE TARGET SERVER which GUCs it knows
+    # (pg_settings), never by a hardcoded list — so a 18→16 or 17→15 dump is
+    # handled by the same code without an update. Anything else in the dump
+    # is left completely untouched and ON_ERROR_STOP still governs the load.
+    def _header_set_params(self, local: Path, gz: bool) -> list[str]:
+        """Collect GUC names from the dump's leading `SET x = ...;` lines."""
+        opener = gzip.open if gz else open
+        params: list[str] = []
+        with opener(local, "rt", errors="replace") as f:
+            for _ in range(400):  # header only; data starts well before this
+                line = f.readline()
+                if not line:
+                    break
+                m = re.match(r"^SET\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*=", line)
+                if m and m.group(1) not in params:
+                    params.append(m.group(1))
+        return params
+
+    def _unknown_params(self, ctx: PhaseContext, leader, params: list[str]) -> list[str]:
+        """Which of `params` does the TARGET server not recognise?"""
+        if not params:
+            return []
+        lst = ",".join(f"'{p}'" for p in params)  # names are [A-Za-z0-9_] only
+        r = leader.run(f"{PSQL} -tA -d postgres -c "
+                       + shlex.quote(f"SELECT name FROM pg_settings WHERE name IN ({lst})"),
+                       timeout=60)
+        if not r.ok:
+            return []  # can't tell — let ON_ERROR_STOP be the judge
+        known = {ln.strip() for ln in r.out.splitlines() if ln.strip()}
+        return [p for p in params if p not in known]
+
     # ------------------------------------------------------------------ plan
     def plan(self, ctx: PhaseContext) -> list[str]:
         local = self._sql_file(ctx)
@@ -81,6 +127,9 @@ class RestorePhase(Phase):
         return [
             f"[red]DESTRUCTIVE[/red]: database '{db}' on the cluster is dropped and "
             f"replaced with {local} ({size})",
+            "check the dump's SET-header GUCs against the server (pg_settings) BEFORE "
+            "anything destructive — version-skew params (e.g. transaction_timeout from a "
+            "pg_dump 17 dump into PG 16) are stripped at load; nothing else is filtered",
             "stop authentik on ALL nodes (docker compose down) before touching the DB",
             "locate the CURRENT Patroni leader via REST /primary (it may not be node-1)",
             "SFTP the dump to the leader, verify sha256, chmod 600",
@@ -124,6 +173,22 @@ class RestorePhase(Phase):
         lname = leader.node.name
         ctx.record(lname, "current Patroni leader located", True, "REST /primary → 200")
 
+        # --- 1b. dump/server version skew, BEFORE anything destructive --------
+        # Discovering an unloadable dump after the DROP leaves the cluster down
+        # on an empty database — so the compatibility question is answered
+        # while everything is still running and nothing has been touched.
+        ctx.begin(lname, "checking dump against server", "pg_dump GUC header")
+        params = self._header_set_params(local, gz)
+        strip = self._unknown_params(ctx, leader, params)
+        if strip:
+            ctx.record(lname, "version-skew GUCs will be stripped", True,
+                       ", ".join(strip) + " — unknown to this server "
+                       "(dump taken with a newer pg_dump); header-only, data untouched",
+                       warn=True)
+        else:
+            ctx.record(lname, "dump header compatible with server", True,
+                       f"{len(params)} SET params, all recognised")
+
         # --- 2. authentik down everywhere ------------------------------------
         for conn in ctx.fleet:
             node = conn.node.name
@@ -160,6 +225,12 @@ class RestorePhase(Phase):
                                "inspect, then --replay restore")
 
         reader = f"gunzip -c {shlex.quote(remote)}" if gz else f"cat {shlex.quote(remote)}"
+        # strip only the exact `SET <guc> = ...;` lines the server rejects —
+        # a targeted header fix, never a blanket error filter (ON_ERROR_STOP
+        # still governs everything else in the dump)
+        if strip:
+            expr = "; ".join(f"/^SET {p} = /d" for p in strip)
+            reader += f" | sed {shlex.quote(expr)}"
         ctx.begin(lname, "restoring dump", f"psql into '{db}' — budget {timeout}s")
         r = leader.run(f"{reader} | {PSQL} -q -d {db}", timeout=timeout)
         ctx.record(lname, "dump restored", r.ok,

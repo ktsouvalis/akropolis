@@ -98,3 +98,25 @@ site config is `tls.provider: self_signed` + `trusted_proxies:
 [192.168.20.20]`.)
 
 **Status:** OPEN — verify first; external-client path may already be correct.
+
+
+## pg_dump version skew on restore (Sep 2026, ESDA Lab)
+
+First real run of the `restore` phase failed with `ERROR: unrecognized
+configuration parameter "transaction_timeout"`. Not a data problem: the dump
+had been written by a `pg_dump` 17 binary, whose header emits
+`SET transaction_timeout = 0;` — a GUC that does not exist before PostgreSQL
+17, so the 16.x target rejects it on the first header line.
+
+Two findings:
+
+1. The phase discovered the incompatibility *after* the DROP, leaving the
+   cluster down on an empty database. The compatibility question is now
+   answered before anything destructive happens (v0.10.2).
+2. The fix is generic, not a hardcoded `transaction_timeout` special case:
+   the dump's header GUCs are checked against the target's `pg_settings`, so
+   18→16 or 17→15 skew is handled by the same code path.
+
+Operational note: prefer dumping with a `pg_dump` matching the target major
+version. The strip is a safety net for dumps you did not produce (backup
+appliances, colleagues' workstations with newer client tools).
