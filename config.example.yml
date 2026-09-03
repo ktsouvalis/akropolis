@@ -160,6 +160,11 @@ authentik:
                                    #   outpost restart loop, see NOTES.md); single → 2026.8.1
                                    #   (no multi-node outpost topology to trigger it).
                                    #   Set explicitly to override either default.
+  # error_reporting: false        # optional, single-node topology only for now (the HA
+                                   # phase still hardcodes false — see NOTES.md). Unset →
+                                   # asked interactively at apply time, answer pinned in
+                                   # state (same pattern as monitor.ip / SMTP below).
+                                   # AUTHENTIK_ERROR_REPORTING__ENABLED.
   # AUTHENTIK_SECRET_KEY: generated once, recorded encrypted in state, identical on all nodes
   # Listen ports pinned off HAProxy's 9000 (guide 7.x): http 9080 / https 9443 / metrics 9300
   bootstrap:

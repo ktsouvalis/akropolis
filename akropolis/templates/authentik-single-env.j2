@@ -1,0 +1,48 @@
+# Managed by akropolis — do not edit by hand (changes are overwritten on replay)
+AUTHENTIK_TAG={{ tag }}
+
+# Consumed by the postgresql service's own environment (${PG_*} substitution)
+# AND, below, by Authentik itself — same values, two different consumers.
+PG_DB=authentik
+PG_USER=authentik
+PG_PASS={{ pg_pass }}
+
+AUTHENTIK_POSTGRESQL__HOST=127.0.0.1
+AUTHENTIK_POSTGRESQL__PORT=5432
+AUTHENTIK_POSTGRESQL__NAME=authentik
+AUTHENTIK_POSTGRESQL__USER=authentik
+AUTHENTIK_POSTGRESQL__PASSWORD={{ pg_pass }}
+
+AUTHENTIK_SECRET_KEY={{ secret_key }}
+
+# Not required by network_mode: host the way it is on the HA cluster (no
+# HAProxy claiming 9000 here) — kept anyway so this .env, the healthchecks,
+# and the nginx-single upstream target are identical to the HA path.
+AUTHENTIK_LISTEN__HTTP=0.0.0.0:9080
+AUTHENTIK_LISTEN__HTTPS=0.0.0.0:9443
+AUTHENTIK_LISTEN__METRICS=0.0.0.0:9300
+
+AUTHENTIK_ERROR_REPORTING__ENABLED={{ 'true' if error_reporting else 'false' }}
+{% if email %}
+
+# SMTP — password resets, MFA email stage, notifications (guide 7.x .env)
+AUTHENTIK_EMAIL__HOST={{ email.host }}
+AUTHENTIK_EMAIL__PORT={{ email.port }}
+{% if email.username %}
+AUTHENTIK_EMAIL__USERNAME={{ email.username }}
+{% endif %}
+{% if email.password %}
+AUTHENTIK_EMAIL__PASSWORD={{ email.password }}
+{% endif %}
+AUTHENTIK_EMAIL__USE_TLS={{ 'true' if email.use_tls else 'false' }}
+AUTHENTIK_EMAIL__USE_SSL={{ 'true' if email.use_ssl else 'false' }}
+AUTHENTIK_EMAIL__TIMEOUT={{ email.timeout }}
+AUTHENTIK_EMAIL__FROM={{ email.from_addr }}
+{% endif %}
+
+# Consumed once on first migration: creates akadmin + API token.
+AUTHENTIK_BOOTSTRAP_PASSWORD={{ bootstrap_password }}
+AUTHENTIK_BOOTSTRAP_TOKEN={{ bootstrap_token }}
+{% if bootstrap_email %}
+AUTHENTIK_BOOTSTRAP_EMAIL={{ bootstrap_email }}
+{% endif %}

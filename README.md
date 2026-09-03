@@ -39,7 +39,7 @@ No Redis: Authentik ≥ 2025.10 keeps sessions, cache, tasks, and WebSocket stat
 | restore | ✅ implemented (optional — skipped unless `restore.sql_file` is set) |
 | handoff | ✅ implemented, tested (emits the real ak-monitor schema) |
 | `akropolis monitor` | 🚧 stub (will fold in ak-monitor) |
-| `site.topology: single` | 🚧 in progress — preflight + base done; authentik (postgres-in-container) and nginx (no keepalived) phases next |
+| `site.topology: single` | 🚧 in progress — preflight, base, tls, authentik (postgres-in-container) done; nginx (no keepalived), restore, handoff, clean next |
 
 **The 3-node HA provisioning pipeline is complete** — every phase from preflight to handoff is implemented. First full run against real VMs is the remaining milestone. A single-node topology (no VIP, PostgreSQL as a plain container, intended as a production-fallback instance) is being scaffolded alongside it — see `site.topology` in the configuration reference.
 
@@ -284,11 +284,21 @@ it to `single` changes the shape of the pipeline, not just its size:
   Docker network.
 
 Intended use: a fallback instance to bring up quickly if the HA cluster is
-down, not a smaller HA cluster. `preflight` and `base` are implemented and
-adapt to `single` today (port list, UFW rules, no VIP/inter-node checks); the
-`authentik` (postgres-in-container + server + worker) and `nginx`
-(TLS-terminating, no keepalived) phases, plus a single-node-aware `clean`,
-are next.
+down, not a smaller HA cluster. `preflight`, `base`, `tls`, and `authentik`
+are implemented and adapt to `single` today. `authentik` here has no
+bootstrap-vs-rolling split the way the HA phase does — with one node, Docker
+Compose's own `depends_on: condition: service_healthy` chain (postgresql →
+worker → server) is enough to prevent the exact problem that split exists to
+avoid on 3 nodes (migrations racing against one database), so `apply` is just
+render + `docker compose up -d` + a health gate. It also resolves the
+AUTHENTIK_ERROR_REPORTING__ENABLED guide-vs-code mismatch by making it an
+explicit `authentik.error_reporting` setting — config, or asked once and
+pinned in state, same pattern as `monitor.ip` — instead of a silent default;
+this is single-node-only for now, the HA phase still hardcodes `false`.
+
+Still missing: the `nginx` phase itself (TLS-terminating, no keepalived — so
+right now `authentik` finishes healthy but isn't reachable on 80/443 yet), a
+single-node `restore`, `handoff`, and a single-node-aware `clean`.
 
 ## Cleaning a site
 

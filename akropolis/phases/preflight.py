@@ -38,7 +38,7 @@ PHASE_CONTAINERS: dict[str, str] = {
 # (next patch); listed here so preflight is forward-compatible once they do.
 PHASES_BY_TOPOLOGY: dict[str, tuple[str, ...]] = {
     "ha": ("base", "etcd", "patroni", "haproxy", "nginx-keepalived", "authentik", "handoff"),
-    "single": ("base", "authentik", "nginx", "handoff"),
+    "single": ("base", "tls", "authentik", "nginx", "handoff"),
 }
 
 

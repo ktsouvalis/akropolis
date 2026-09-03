@@ -58,12 +58,14 @@ class TLSPhase(Phase):
         if p == "none":
             return ["provider 'none': no certificates — nginx will serve plain HTTP :80 "
                     "(testing only; WebAuthn/passkeys will not work without a secure context)"]
-        common = [f"distribute fullchain.pem + privkey.pem to {CERT_DIR} on all 3 nodes "
+        common = [f"distribute fullchain.pem + privkey.pem to {CERT_DIR} on "
+                  f"{'all ' + str(len(cfg.nodes)) + ' nodes' if len(cfg.nodes) > 1 else 'the node'} "
                   "(privkey mode 0600)",
                   "verify on every node: key matches cert, SAN covers the hostname"]
         if p == "self_signed":
+            san_desc = "hostname + node names + node IPs" + (" + VIP" if cfg.network.vip else "")
             return [f"generate 10-year self-signed cert on {cfg.bootstrap_leader.name} — "
-                    f"CN {cfg.tls.hostname}, SANs: hostname + node names + VIP + node IPs",
+                    f"CN {cfg.tls.hostname}, SANs: {san_desc}",
                     *common]
         if p == "acme":
             return ["STAGING ONLY (issuance happens after nginx is up):",
@@ -120,7 +122,7 @@ class TLSPhase(Phase):
             san = ",".join(
                 [f"DNS:{cfg.tls.hostname}"]
                 + [f"DNS:{n.name}" for n in cfg.nodes]
-                + [f"IP:{cfg.network.vip}"]
+                + ([f"IP:{cfg.network.vip}"] if cfg.network.vip else [])
                 + [f"IP:{n.ip}" for n in cfg.nodes])
             cmd = (f"cd {CERT_DIR} && openssl req -x509 -nodes -days 3650 "
                    f"-newkey rsa:2048 -keyout privkey.pem -out fullchain.pem "

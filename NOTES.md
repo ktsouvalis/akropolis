@@ -200,6 +200,54 @@ replacement under a running Patroni).
 does not mention, so this cannot silently recur.
 
 
+## Single-node topology: authentik + tls phases (Sep 2026)
+
+Second slice of `site.topology: single`, following the config/preflight/base
+scaffolding above. `tls` needed one real fix (not just a topology branch):
+its self-signed SAN list unconditionally appended `IP:{cfg.network.vip}`,
+which single-node leaves as `""` — `openssl req -addext` with an empty IP
+SAN would have produced either a malformed cert or a hard failure depending
+on the openssl version. Fixed to only add the VIP SAN when one exists; a
+couple of plan()-text lines that assumed 3 nodes were adjusted alongside it.
+
+The new `authentik` (single) phase deliberately diverges from the real
+running `auth-tmp` instance's compose in one respect: no external
+`reverse_proxy` Docker network. That instance's networking follows from it
+doubling as a general-purpose test box sitting behind an existing reverse
+proxy; the actual single-node target is a dedicated VM reachable by 1:1 NAT
+with nothing upstream, so akropolis owns TLS termination itself (the `nginx`
+phase, not yet written) the same way it does on the HA cluster. Consequence:
+`server`/`worker` run on `network_mode: host` like the HA cluster's
+containers, not the bridge networks in the reference compose — which also
+means the exact same container names (`authentik-server-1`,
+`authentik-worker-1`, project directory `/opt/authentik` on both
+topologies), so the HA phase's health-gate/log-dump helpers work unchanged
+via a plain import, no duplication needed for those.
+
+PostgreSQL keeps the reference's container-not-Patroni approach, but isn't
+on a fully internal network either: it publishes `127.0.0.1:5432:5432` —
+loopback only, never reachable off the host — so the host-networked
+server/worker can reach it exactly the way an HA node reaches its own local
+HAProxy on `127.0.0.1:5000`. Same "always local, never a remote IP" pattern
+as the lesson that produced that HA rule in the first place.
+
+`AUTHENTIK_ERROR_REPORTING__ENABLED` (the open guide-vs-code mismatch — guide
+says true, the HA `.env` template hardcodes false) is resolved for
+single-node by making it a real setting instead of picking a side:
+`authentik.error_reporting` in the site config, or asked interactively once
+and pinned in state — identical resolution order to `monitor.ip` and the
+SMTP block. The HA phase is untouched for now and still hardcodes `false`;
+unifying the two is the same follow-up noted in `authentik_single_phase.py`
+that also covers the duplicated `_email`/`_branding_volumes`/`_acfg` methods.
+
+Not yet handled: a single-node bootstrap with a genuinely slow migration
+(e.g. a large `restore.sql_file`) could hit the same "dependency failed to
+start" ceiling documented under "Restored database vs compose's dependency
+wait" above — fine for a fresh empty-schema bootstrap (migrates in seconds),
+but the single-node `restore` phase, when it exists, will need the identical
+`--no-deps worker` alone-first fix already proven on the HA cluster.
+
+
 ## Single-node topology: scaffolding (Sep 2026)
 
 First slice of `site.topology: single` — config validation, `preflight`,
