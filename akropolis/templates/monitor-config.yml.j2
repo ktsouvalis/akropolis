@@ -42,12 +42,30 @@ nodes:
 {% endfor %}
 
 ports:
-  authentik: 9443
+  # Authentik SERVER, HTTPS listener. Present regardless of tls.provider —
+  # AUTHENTIK_LISTEN__HTTPS is always set, so this is self-signed on a
+  # tls: none site and still answers /-/health/live/ and /-/health/ready/.
+  authentik: {{ authentik_port }}
+  # Authentik WORKER liveness — a SEPARATE port (9081), never 9443: the
+  # worker binds its own HTTP listener so it does not squat the server's.
+  # Probing the worker on 9443 reaches the server, which makes a dead
+  # worker look alive.
+  authentik_worker: 9081
   patroni: 8008
   etcd: 2379
   haproxy_stats: 9000
   nginx_status: 8080
   postgres: 5432
+
+# Scheme + port for the per-node nginx `/monitor` identity endpoint and the
+# Authentik health probes. On a tls: none site nginx serves plain HTTP on :80,
+# so an https:// probe fails outright and every node shows DOWN.
+scheme:
+  nginx: "{{ nginx_scheme }}"          # probe {{ nginx_scheme }}://<node-ip>/monitor
+  nginx_port: {{ nginx_port }}
+  authentik: "https"                   # server health is HTTPS on {{ authentik_port }}
+  authentik_worker: "http"             # worker liveness is plain HTTP on 9081
+  verify_tls: {{ 'true' if verify_tls else 'false' }}
 
 ssh:
   username: "{{ ssh_user }}"

@@ -143,3 +143,26 @@ find a migrated schema — so they keep the plain `up -d`.
 
 Also added: whenever a health gate expires, akropolis prints the tail of the
 container log instead of advising the operator to go and read it.
+
+
+## Monitor config assumed TLS everywhere (Sep 2026)
+
+The emitted monitor config hardcoded `ports.authentik: 9443` and said nothing
+about scheme, while ak-monitor probes `https://<node-ip>/monitor` for the
+nginx/keepalived panel and `/-/health/live/` on 9443. On a `tls: none` lab
+site nginx serves plain HTTP on :80, so every node shows DOWN for a reason
+that has nothing to do with the cluster.
+
+Second problem in the same place: the Authentik **worker** does not listen on
+9443 at all — since v0.7.10 it binds its own port (9081) so it cannot squat
+the server's. Probing the worker on 9443 reaches the *server*, so a dead
+worker looks alive — the exact failure mode the worker healthcheck exists to
+catch.
+
+Handoff (v0.10.4) now emits a `scheme:` block: `nginx` (http/https) and
+`nginx_port` derived from tls.provider, `authentik`/`authentik_worker`
+schemes, `verify_tls` (true only for acme/import — self-signed and lab certs
+must not be verified), plus `ports.authentik_worker: 9081`.
+
+**ak-monitor must be taught to read these keys** — emitting them is only half
+the fix. Until then, a tls: none site needs the scheme edited by hand.

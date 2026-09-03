@@ -74,6 +74,14 @@ class HandoffPhase(Phase):
             ssh_key_file=cfg.ssh.key_file
             or "CHANGE_ME  # path to the private key the monitor should use",
             authentik_url=self._url(ctx),
+            # tls: none → nginx is plain HTTP on :80; anything else → HTTPS :443.
+            # Emitting the scheme instead of assuming https is what keeps a lab
+            # site's dashboard from showing every node DOWN.
+            nginx_scheme="http" if cfg.tls.provider == "none" else "https",
+            nginx_port=80 if cfg.tls.provider == "none" else 443,
+            authentik_port=9443,
+            # self-signed and lab certs must not be verified by the monitor
+            verify_tls=cfg.tls.provider in ("acme", "import"),
             haproxy_stats_pass=gen.get("haproxy_stats_password", ""),
             api_token=gen.get("authentik_bootstrap_token", ""),
             postgres_password=gen.get("pg_superuser_password", ""),
@@ -107,6 +115,10 @@ class HandoffPhase(Phase):
                           f"edit [bold]{out}[/bold] and replace the CHANGE_ME placeholder "
                           "under 'ssh:' with the private key path the monitor should "
                           "use, or its SSH-based checks will fail.[/yellow]")
+        if cfg.tls.provider == "none":
+            console.print("  [yellow]NOTE: tls 'none' — nginx serves plain HTTP on :80. "
+                          "The emitted config sets scheme.nginx: http; ak-monitor must "
+                          "honour it, or every node shows DOWN on an https:// probe.[/yellow]")
         if gen.get("tls_acme_pending"):
             console.print("  [yellow]NOTE: ACME issuance is still pending — the cluster is "
                           "serving the placeholder cert.[/yellow]")
@@ -124,7 +136,7 @@ class HandoffPhase(Phase):
             return False
         ctx.record("workstation", "emitted file parses as YAML", True, "")
 
-        required = ["site_name", "vip", "nodes", "ports", "ssh",
+        required = ["site_name", "vip", "nodes", "ports", "ssh", "scheme",
                     "services", "authentik", "credentials", "keepalived"]
         missing = [k for k in required if k not in (data or {})]
         ctx.record("workstation", "schema keys present", not missing,
