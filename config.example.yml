@@ -34,6 +34,16 @@ ssh:
   port: 22
 
 # ---------------------------------------------------------------------------
+# Base OS setup
+# ---------------------------------------------------------------------------
+base:
+  apt_upgrade: false              # `apt update` always runs; `apt upgrade` does NOT
+                                  # unless this is true. Package drift belongs to your
+                                  # patching policy, not the provisioner — and an
+                                  # unattended upgrade mid-provision can replace
+                                  # libraries under a running Patroni (see NOTES.md).
+
+# ---------------------------------------------------------------------------
 # Nodes — exactly 3
 # ---------------------------------------------------------------------------
 nodes:
@@ -58,6 +68,21 @@ network:
     priorities: [110, 100, 90]    # node order; track-script weight -25 baked into template
   check_l2_adjacency: true        # preflight: nodes must see each other's VRRP multicast
 
+  # Upstream reverse proxy in front of the cluster (e.g. Traefik holding a
+  # HARICA wildcard, forwarding to the internal VIP). Without this, nginx
+  # overwrites X-Real-IP with the PROXY's address and X-Forwarded-Proto with
+  # its own scheme, so Authentik sees every login as coming from the proxy —
+  # poisoning reputation policies, event logs and GeoIP. Use with
+  # tls.provider: self_signed.
+  # trusted_proxies:
+  #   - 192.168.20.20             # IPs or CIDRs of the upstream proxy
+
+  # Extra sources allowed to read nginx stub_status on :8080. Loopback and the
+  # node subnet are always allowed, and monitor.ip is added automatically; add
+  # CIDRs here only for additional off-subnet collectors.
+  # stub_status_allow:
+  #   - 10.10.0.0/16
+
 # ---------------------------------------------------------------------------
 # PostgreSQL / Patroni / etcd
 # ---------------------------------------------------------------------------
@@ -65,6 +90,12 @@ postgres:
   version: 16
   cluster_name: authentik-postgres
   # superuser / replication / rewind passwords come from `secrets`, never here
+
+  # Extra pg_hba lines, appended to the DCS-managed rules. Use for external
+  # consumers such as a backup host or a reporting tool. Rules live in the DCS
+  # config so they survive a reinit — on-disk-only rules do not (NOTES.md).
+  # extra_pg_hba:
+  #   - "host authentik authentik 10.23.2.50/32 scram-sha-256"
 
 etcd:
   # initial-cluster token is generated once and recorded in the state file,

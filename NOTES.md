@@ -269,3 +269,21 @@ serve a broken asset). The bare OSError is also wrapped: "[Errno 13]
 Permission denied" named neither the node, the file, nor which end refused.
 
 **Rule: any write outside /tmp must go through run(), not put().**
+
+
+## Documented in the README, missing from the example config (Sep 2026)
+
+`base.apt_upgrade` and `network.trusted_proxies` were both implemented and
+described in the README, but absent from `config.example.yml` — so an operator
+reading the file they actually edit had no way to discover them. A README
+paragraph is not discovery.
+
+Auditing the whole surface found four such keys: `base.apt_upgrade`,
+`network.trusted_proxies`, `network.stub_status_allow`,
+`postgres.extra_pg_hba`. All are now in the example, commented out with the
+reasoning that matters (trusted_proxies poisoning client IPs; extra_pg_hba
+needing to live in DCS to survive a reinit; apt_upgrade vs unattended library
+replacement under a running Patroni).
+
+`tools/audit_config_keys.py` now fails when the code reads a key the example
+does not mention, so this cannot silently recur.

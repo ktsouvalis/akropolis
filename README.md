@@ -257,6 +257,11 @@ Verify parses the emitted file back and asserts the schema: all top-level keys t
 
 Destruction earns the typed-site-name gate in *every* environment, not just production; `site.environment: production` is refused outright unless `--i-know-this-is-production` is also given. The local state file is archived to `.state/<site>.json.cleaned-<timestamp>` (0600 — the pinned secrets are your paper trail) and removed, so the next provision regenerates every secret and preflight's `refuse_existing` passes on a genuinely blank slate. Cleaning a half-built node — exactly what a failed provision leaves behind — is a supported case: every step is idempotent.
 
+
+## Configuration reference
+
+`config.example.yml` is the reference: every key akropolis reads appears there, commented out when optional. That is enforced rather than promised — `python3 tools/audit_config_keys.py` fails if the code reads a key the example never mentions. It exists because `base.apt_upgrade` and `network.trusted_proxies` were documented in this README and implemented in code but missing from the example, which meant that in practice nobody could find them.
+
 ## Behind an external reverse proxy
 
 If public TLS is terminated upstream — e.g. a Traefik instance holding a HARICA wildcard, with the cluster reachable only through it — the intended setup is `tls.provider: self_signed`: the internal VIP serves a self-signed cert, and the external proxy forwards to it with certificate verification disabled. Preflight's DNS→VIP check is warn-only for `self_signed`, so a public hostname that resolves to the proxy rather than the VIP does not block.
