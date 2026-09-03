@@ -126,6 +126,7 @@ class TLSPhase(Phase):
                    f"-newkey rsa:2048 -keyout privkey.pem -out fullchain.pem "
                    f"-subj '/C=GR/O=akropolis/CN={cfg.tls.hostname}' "
                    f"-addext 'subjectAltName={san}' && chmod 600 privkey.pem")
+            ctx.begin(leader.node.name, "generating self-signed cert", "10y, full SAN set")
             r = leader.run(cmd, timeout=120)
             ctx.record(leader.node.name, "self-signed cert generated", r.ok,
                        r.err.splitlines()[-1] if (not r.ok and r.err) else "")
@@ -145,6 +146,7 @@ class TLSPhase(Phase):
     def _stage_acme(self, ctx: PhaseContext) -> None:
         cfg = ctx.cfg
         leader = next(c for c in ctx.fleet if c.node.bootstrap_leader)
+        ctx.begin(leader.node.name, "installing certbot", "no-op when present")
         r = leader.run("command -v certbot || "
                        "(DEBIAN_FRONTEND=noninteractive apt-get -y -qq install certbot)",
                        timeout=600)

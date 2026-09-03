@@ -67,6 +67,10 @@ Requirements on the **nodes**: fresh Ubuntu 24.04, a root-capable SSH user, corr
 .venv/bin/akropolis provision config.<site>.yml
 ```
 
+### Live progress
+
+Every long-running operation announces itself *before* it runs: an animated status line in a terminal (`… (ak-node-2) bootstrap: pull + database migrations — 130s / 900s`), a plain `…` line when output is piped. Waits (leader promotion, replica join, backend convergence, container health gates, ACME issuance) tick elapsed/budget in place. Without this, a ten-minute image pull is indistinguishable from a hang; with it, a red ✘ is always preceded by the exact thing that was in flight.
+
 ## Commands
 
 ```

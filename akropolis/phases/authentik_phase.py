@@ -41,6 +41,19 @@ HEALTHY = ("docker inspect -f '{{.State.Health.Status}}' authentik-server-1 "
            "authentik-worker-1 2>/dev/null | sort -u")
 
 
+def wait_healthy(ctx, conn, timeout: float, label: str = "waiting for healthy") -> bool:
+    """Gate until BOTH containers report exactly 'healthy', with a live line.
+
+    Module-level so the restore phase reuses the identical gate.
+    """
+    node = conn.node.name
+    ctx.begin(node, label, f"0s / {int(timeout)}s")
+    ok = wait_for(conn, f"{HEALTHY} | grep -v healthy | wc -l",
+                  expect="0", timeout=timeout, interval=10,
+                  tick=lambda el: ctx.tick(f"{int(el)}s / {int(timeout)}s"))
+    return ok and conn.run(f"{HEALTHY}").out.strip() == "healthy"
+
+
 class AuthentikPhase(Phase):
     name = "authentik"
 
@@ -109,12 +122,6 @@ class AuthentikPhase(Phase):
         return {"host": host, "port": port, "username": username,
                 "password": password, "use_tls": use_tls, "use_ssl": use_ssl,
                 "timeout": int(ecfg.get("timeout", 10)), "from_addr": from_addr}
-
-    def _wait_healthy(self, conn, timeout: float) -> bool:
-        # both containers must report exactly 'healthy'
-        return wait_for(conn, f"{HEALTHY} | grep -v healthy | wc -l",
-                        expect="0", timeout=timeout, interval=10) and \
-            conn.run(f"{HEALTHY}").out.strip() == "healthy"
 
     # ------------------------------------------------------------------ plan
     def plan(self, ctx: PhaseContext) -> list[str]:
@@ -196,10 +203,12 @@ class AuthentikPhase(Phase):
                 if not changed[node]:
                     ctx.record(node, "rolling: skipped", True, "config unchanged")
                     continue
+                ctx.begin(node, "rolling: down && up")
                 r = conn.run("cd /opt/authentik && docker compose down && "
                              "docker compose up -d", timeout=1200)
                 ctx.record(node, "rolling: down && up", r.ok, r.err if not r.ok else "")
-                good = r.ok and self._wait_healthy(conn, timeout=900)
+                good = r.ok and wait_healthy(ctx, conn, timeout=900,
+                                             label="rolling: waiting for healthy")
                 ctx.record(node, "rolling: healthy", good,
                            "" if good else "containers never reached healthy")
                 if not good:
@@ -209,10 +218,12 @@ class AuthentikPhase(Phase):
             leader = next(c for c in ctx.fleet if c.node.bootstrap_leader)
             others = [c for c in ctx.fleet if not c.node.bootstrap_leader]
 
+            ctx.begin(leader.node.name, "bootstrap: compose up", "image pull can take minutes")
             r = leader.run("cd /opt/authentik && docker compose up -d", timeout=1800)
             ctx.record(leader.node.name, "bootstrap node starting", r.ok,
                        r.err if not r.ok else "pull + migrations in progress")
-            good = r.ok and self._wait_healthy(leader, timeout=900)
+            good = r.ok and wait_healthy(ctx, leader, timeout=900,
+                                         label="bootstrap: pull + database migrations")
             ctx.record(leader.node.name, "bootstrap node healthy (migrations done)",
                        good, "" if good else
                        "never reached healthy — docker compose logs on the node")
@@ -222,9 +233,10 @@ class AuthentikPhase(Phase):
 
             for conn in others:
                 node = conn.node.name
+                ctx.begin(node, "compose up", "schema already migrated")
                 r = conn.run("cd /opt/authentik && docker compose up -d", timeout=1800)
                 ctx.record(node, "starting", r.ok, r.err if not r.ok else "")
-                good = r.ok and self._wait_healthy(conn, timeout=900)
+                good = r.ok and wait_healthy(ctx, conn, timeout=900)
                 ctx.record(node, "healthy", good,
                            "" if good else "never reached healthy")
                 if not good:
@@ -235,7 +247,7 @@ class AuthentikPhase(Phase):
         ok = True
         for conn in ctx.fleet:
             node = conn.node.name
-            good = self._wait_healthy(conn, timeout=60)
+            good = wait_healthy(ctx, conn, timeout=60, label="verify: healthy gate")
             ctx.record(node, "verify: containers healthy", good, "")
             ok = ok and good
             r = conn.run("curl -sk -o /dev/null -w '%{http_code}' "

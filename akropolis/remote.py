@@ -69,10 +69,17 @@ def push_file(conn: NodeConn, content: str, remote_path: str,
 
 def wait_for(conn: NodeConn, cmd: str, expect: str | None = None,
              timeout: float = 120.0, interval: float = 5.0,
-             label: str = "") -> bool:
-    """Poll `cmd` over SSH until it exits 0 (and, if given, stdout contains `expect`)."""
-    deadline = time.monotonic() + timeout
+             label: str = "", tick=None) -> bool:
+    """Poll `cmd` over SSH until it exits 0 (and, if given, stdout contains `expect`).
+
+    `tick(elapsed_seconds)` is called once per poll so the caller can keep a
+    live "still waiting: 40s / 900s" line on screen instead of dead air.
+    """
+    start = time.monotonic()
+    deadline = start + timeout
     while time.monotonic() < deadline:
+        if tick:
+            tick(time.monotonic() - start)
         r = conn.run(cmd, timeout=min(30, timeout))
         if r.ok and (expect is None or expect in r.out):
             return True

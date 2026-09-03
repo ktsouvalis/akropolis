@@ -42,8 +42,40 @@ class PhaseContext:
     state: State
     fleet: Fleet
     checks: list[Check] = field(default_factory=list)
+    _status: object = field(default=None, repr=False)
+    _status_text: str = field(default="", repr=False)
+
+    # --- live progress ----------------------------------------------------
+    # A phase announces what it is ABOUT to do; record() reports how it went.
+    # Without this, a 10-minute image pull looks exactly like a hang — the
+    # operator only ever saw ✔/✘ after the fact.
+    def begin(self, node: str, name: str, detail: str = "") -> None:
+        self.end_status()
+        self._status_text = f"({node}) {name}" + (f" — {detail}" if detail else "")
+        if console.is_terminal:
+            try:
+                self._status = console.status(f"[cyan]{self._status_text}[/cyan]",
+                                              spinner="dots")
+                self._status.start()
+                return
+            except Exception:  # noqa: BLE001 — fall through to the plain line
+                self._status = None
+        # piped/CI output: a live spinner renders nothing there, so the log
+        # would show ✔/✘ with no trace of what was in flight — print instead
+        console.print(f"  … {self._status_text}", markup=False, highlight=False)
+
+    def tick(self, detail: str) -> None:
+        """Update the live line in place (e.g. elapsed/timeout during a wait)."""
+        if self._status is not None:
+            self._status.update(f"[cyan]{self._status_text} — {detail}[/cyan]")
+
+    def end_status(self) -> None:
+        if self._status is not None:
+            self._status.stop()
+            self._status = None
 
     def record(self, node: str, name: str, ok: bool, detail: str = "", warn: bool = False) -> Check:
+        self.end_status()
         c = Check(node=node, name=name, ok=ok, detail=detail, warn=warn)
         self.checks.append(c)
         mark = "[green]✔[/green]" if ok else ("[yellow]⚠[/yellow]" if warn else "[red]✘[/red]")
@@ -101,17 +133,22 @@ def run_phases(phases: list[Phase], ctx: PhaseContext, replay: bool = False) -> 
         try:
             phase.apply(ctx)
         except Exception as exc:  # noqa: BLE001 — surface everything, then stop
+            ctx.end_status()
             console.print(f"[red]apply failed:[/red] {exc}")
             ctx.state.mark_phase(phase.name, "failed", {"error": str(exc)})
             return False
+        finally:
+            ctx.end_status()
 
         if phase.verify(ctx):
             ctx.state.mark_phase(phase.name, "done")
             console.print(f"[green]phase {phase.name}: OK[/green]")
         else:
+            ctx.end_status()
             ctx.state.mark_phase(phase.name, "failed")
             console.print(f"[red]phase {phase.name}: verify failed — stopping.[/red]")
             return False
+        ctx.end_status()
     return True
 
 

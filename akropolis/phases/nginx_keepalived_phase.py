@@ -125,6 +125,7 @@ class NginxKeepalivedPhase(Phase):
 
             if not running or conf_changed or compose_changed:
                 # conf changes also get down && up: single-file bind-mount inode trap
+                ctx.begin(node, "nginx compose up", "first start pulls the image")
                 r = conn.run("cd /opt/nginx && docker compose down 2>/dev/null; "
                              "cd /opt/nginx && docker compose up -d", timeout=300)
                 ctx.record(node, "nginx up", r.ok, r.err if not r.ok else "")
@@ -135,9 +136,11 @@ class NginxKeepalivedPhase(Phase):
         scheme = "https" if self._tls_enabled(ctx) else "http"
         for conn in ctx.fleet:
             node = conn.node.name
+            ctx.begin(node, "waiting for per-node /monitor identity")
             ok = wait_for(conn,
                           f"curl -sk {scheme}://{conn.node.ip}/monitor",
-                          expect=f'"node":"{node}"', timeout=60, interval=5)
+                          expect=f'"node":"{node}"', timeout=60, interval=5,
+                          tick=lambda el: ctx.tick(f"{int(el)}s / 60s"))
             ctx.record(node, "per-node /monitor answers with own identity", ok,
                        "" if ok else f"{scheme}://{conn.node.ip}/monitor wrong or absent")
             if not ok:
@@ -149,6 +152,7 @@ class NginxKeepalivedPhase(Phase):
         auth = self._auth_pass(ctx)
         for conn, prio in zip(ctx.fleet, prios):
             node = conn.node.name
+            ctx.begin(node, "installing keepalived", "no-op when present")
             r = conn.run("command -v keepalived >/dev/null && command -v nc >/dev/null || "
                          "DEBIAN_FRONTEND=noninteractive apt-get -y -qq install "
                          "keepalived netcat-openbsd", timeout=600)
@@ -210,6 +214,7 @@ class NginxKeepalivedPhase(Phase):
                f"--server {shlex.quote(a['directory_url'])} "
                f"--non-interactive --keep-until-expiring"
                + (" --staging" if a.get("staging") else ""))
+        ctx.begin(leader.node.name, "certbot issuance", "HTTP-01 via the VIP webroot")
         r = leader.run(cmd, timeout=600)
         issued = r.ok
         ctx.record(leader.node.name,

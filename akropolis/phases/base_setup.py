@@ -57,12 +57,15 @@ class BasePhase(Phase):
             r = conn.run(script)
             ctx.record(node, "/etc/hosts block", r.ok, r.err if not r.ok else "")
 
+            ctx.begin(node, "apt update" + (" + upgrade" if upgrade else ""))
             r = conn.run(f"{APT} update", timeout=300)
             if upgrade and r.ok:
+                ctx.begin(node, "apt upgrade", "can take several minutes")
                 r = conn.run(f"{APT} upgrade", timeout=1800)
             ctx.record(node, "apt update" + ("+upgrade" if upgrade else ""), r.ok,
                        r.err.splitlines()[-1] if (not r.ok and r.err) else "")
 
+            ctx.begin(node, "installing baseline packages", "chrony, jq, pg client deps, ...")
             r = conn.run(f"{APT} install {PACKAGES}", timeout=900)
             ctx.record(node, "baseline packages", r.ok,
                        r.err.splitlines()[-1] if (not r.ok and r.err) else "")
@@ -72,6 +75,7 @@ class BasePhase(Phase):
             if conn.run("command -v docker && docker compose version").ok:
                 ctx.record(node, "docker", True, "already installed")
             else:
+                ctx.begin(node, "installing Docker CE", "keyring + repo + packages")
                 script = r"""
 install -m 0755 -d /etc/apt/keyrings
 curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc

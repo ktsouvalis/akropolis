@@ -98,9 +98,11 @@ class PatroniPhase(Phase):
         # --- 1. install + config on ALL nodes, start nothing --------------
         for conn in ctx.fleet:
             node = conn.node.name
+            ctx.begin(node, "installing PostgreSQL 16 from pgdg", "no-op when present")
             r = conn.run(PG_INSTALL, timeout=900)
             ctx.record(node, "postgresql 16 installed", r.ok,
                        r.err.splitlines()[-1] if (not r.ok and r.err) else "")
+            ctx.begin(node, "patroni venv + dirs", "pip install patroni[etcd3]")
             r = conn.run(PATRONI_INSTALL, timeout=900)
             ctx.record(node, "patroni venv + dirs", r.ok,
                        r.err.splitlines()[-1] if (not r.ok and r.err) else "")
@@ -125,10 +127,13 @@ class PatroniPhase(Phase):
         r = leader_conn.run("systemctl enable --now patroni")
         ctx.record(leader_conn.node.name, "patroni started (bootstrap leader)", r.ok,
                    r.err if not r.ok else "")
+        ctx.begin(leader_conn.node.name, "waiting for leader promotion",
+                  "initdb + REST /primary → 200")
         promoted = wait_for(
             leader_conn,
             "curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8008/primary",
             expect="200", timeout=300, interval=5,
+            tick=lambda el: ctx.tick(f"{int(el)}s / 300s"),
         )
         ctx.record(leader_conn.node.name, "promoted self to leader", promoted,
                    "" if promoted else "REST /primary never returned 200 within 300s — "
@@ -143,7 +148,9 @@ class PatroniPhase(Phase):
             node = conn.node.name
             r = conn.run("systemctl enable --now patroni")
             ctx.record(node, "patroni started (replica)", r.ok, r.err if not r.ok else "")
-            streaming = wait_for(conn, ROLE_CMD, expect="replica", timeout=300, interval=5)
+            ctx.begin(node, "waiting for replica to join", "basebackup + streaming")
+            streaming = wait_for(conn, ROLE_CMD, expect="replica", timeout=300, interval=5,
+                                 tick=lambda el: ctx.tick(f"{int(el)}s / 300s"))
             if streaming:
                 # role is replica — now require state running/streaming
                 streaming = wait_for(

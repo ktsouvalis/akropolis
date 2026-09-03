@@ -49,11 +49,13 @@ class EtcdPhase(Phase):
             changed = push_file(conn, content, "/opt/etcd/docker-compose.yml")
             running = conn.run("docker ps --filter status=running --format '{{.Names}}' | grep -qx etcd").ok
             if changed and running:
+                ctx.begin(node, "etcd compose down && up", "config changed")
                 r = conn.run("cd /opt/etcd && docker compose down && docker compose up -d",
                              timeout=300)
                 ctx.record(node, "compose down && up (config changed)", r.ok,
                            r.err if not r.ok else "")
             else:
+                ctx.begin(node, "etcd compose up -d", "first start pulls the image")
                 r = conn.run("cd /opt/etcd && docker compose up -d", timeout=300)
                 ctx.record(node, "compose up -d", r.ok, r.err if not r.ok else "")
 
@@ -62,10 +64,12 @@ class EtcdPhase(Phase):
         endpoints = ",".join(f"http://{n.ip}:2379" for n in cfg.nodes)
         first = ctx.fleet.conns[0]
 
+        ctx.begin("cluster", "waiting for etcd quorum", "all 3 endpoints healthy")
         healthy = wait_for(
             first,
             f"docker exec etcd etcdctl --endpoints={endpoints} endpoint health 2>&1",
             timeout=90, interval=5,
+            tick=lambda el: ctx.tick(f"{int(el)}s / 90s"),
         )
         detail = ""
         if healthy:

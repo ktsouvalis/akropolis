@@ -73,6 +73,7 @@ class HAProxyPhase(Phase):
                                "--format '{{.Names}}' | grep -qx haproxy").ok
 
             if not running or compose_changed:
+                ctx.begin(node, "haproxy compose up", "first start pulls the image")
                 r = conn.run("cd /opt/haproxy && docker compose down 2>/dev/null; "
                              "cd /opt/haproxy && docker compose up -d", timeout=300)
                 ctx.record(node, "compose up", r.ok, r.err if not r.ok else "")
@@ -98,6 +99,7 @@ class HAProxyPhase(Phase):
                 ok = False
                 continue
 
+            ctx.begin(node, "waiting for backend convergence", "1 primary + 2 replicas UP")
             converged = wait_for(
                 conn,
                 f"{csv_cmd} | awk -F, "
@@ -105,6 +107,7 @@ class HAProxyPhase(Phase):
                 "$1==\"pg_replica_backend\" && $2!~/BACKEND|FRONTEND/ && $18==\"UP\" {r++} "
                 "END {exit !(p==1 && r==2)}'",
                 timeout=90, interval=5,
+                tick=lambda el: ctx.tick(f"{int(el)}s / 90s"),
             )
             ctx.record(node, "backends: 1 UP primary + 2 UP replicas", converged,
                        "" if converged else "did not converge within 90s")
