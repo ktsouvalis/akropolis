@@ -287,3 +287,23 @@ replacement under a running Patroni).
 
 `tools/audit_config_keys.py` now fails when the code reads a key the example
 does not mention, so this cannot silently recur.
+
+
+## Branding is two halves, not one (Sep 2026)
+
+Noticed on the ESDA test cluster: the logo only appeared after the production
+database was restored. Mounting a file changes nothing by itself — Authentik
+serves the stock logo until the **brand row** in the database references the
+asset. The restore brought UoP's brand row with it, which is why it suddenly
+worked; on a fresh cluster the same (correct) configuration looks broken.
+
+The reverse case is worse: a dump whose brand references an asset this cluster
+never mounted serves a broken image on the login page.
+
+v0.11.3 closes the loop — after the cluster is healthy, the default brand is
+PATCHed via /api/v3/core/brands/ to /static/dist/assets/{icons,images}/<name>.
+Brand fields only accept the /static prefix for absolute paths
+(goauthentik #19557), which is exactly where /web/dist/assets is served from.
+The restore phase re-applies it after loading a dump. Failures warn rather
+than fail: the cluster is healthy either way, and a logo is not worth
+aborting a provision over.

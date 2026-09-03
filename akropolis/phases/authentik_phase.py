@@ -31,6 +31,7 @@ token that the handoff phase gives to the monitor.
 from __future__ import annotations
 
 import getpass
+import json
 import secrets as pysecrets
 import shlex
 from pathlib import Path
@@ -63,6 +64,55 @@ def wait_healthy(ctx, conn, timeout: float, label: str = "waiting for healthy") 
     ctx.begin(node, label, f"0s / {int(timeout)}s")
     return wait_for(conn, ALL_HEALTHY, timeout=timeout, interval=10,
                     tick=lambda el: ctx.tick(f"{int(el)}s / {int(timeout)}s"))
+
+
+# Mounting a file changes nothing on its own: Authentik shows the stock logo
+# until the BRAND RECORD points at the asset. On a fresh cluster that makes a
+# correct branding setup look broken (the file is there, the login page is
+# unchanged) — so akropolis sets the brand too, closing the loop.
+#
+# The container path /web/dist/assets/<sub>/<name> is served at
+# /static/dist/assets/<sub>/<name>, and brand fields only accept the /static
+# prefix for absolute paths (goauthentik #19557).
+BRAND_FIELDS = {
+    "logo": ("icons", "branding_logo"),
+    "favicon": ("icons", "branding_favicon"),
+    "background": ("images", "branding_default_flow_background"),
+}
+
+
+def apply_brand(ctx, conn, branding: dict, token: str) -> bool:
+    """Point the DEFAULT brand at the mounted assets. Idempotent."""
+    fields = {}
+    for key, (subdir, field) in BRAND_FIELDS.items():
+        src = str(branding.get(key) or "").strip()
+        if src:
+            fields[field] = f"/static/dist/assets/{subdir}/{Path(src).name}"
+    if not fields:
+        return True
+
+    auth = shlex.quote("Authorization: Bearer " + token)
+    base = "https://127.0.0.1:9443/api/v3/core/brands/"
+    ctx.begin(conn.node.name, "pointing default brand at the mounted assets")
+    r = conn.run(f"curl -sk -H {auth} {shlex.quote(base + '?ordering=domain')} "
+                 "| jq -r '.results[] | select(.default==true) | .brand_uuid' | head -1",
+                 timeout=60)
+    uuid = r.out.strip()
+    if not r.ok or not uuid:
+        ctx.record(conn.node.name, "default brand lookup", False,
+                   "could not find the default brand — set the logo manually in "
+                   "System > Brands", warn=True)
+        return False
+
+    payload = json.dumps(fields)
+    r = conn.run(f"curl -sk -X PATCH -H {auth} -H 'Content-Type: application/json' "
+                 f"-d {shlex.quote(payload)} -o /dev/null -w '%{{http_code}}' "
+                 f"{shlex.quote(base + uuid + '/')}", timeout=60)
+    ok = r.out.strip() == "200"
+    ctx.record(conn.node.name, "default brand updated", ok,
+               ", ".join(f"{k}={v}" for k, v in fields.items()) if ok
+               else f"HTTP {r.out} — set it manually in System > Brands", warn=not ok)
+    return ok
 
 
 def wait_one_healthy(ctx, conn, container: str, timeout: float,
@@ -121,9 +171,8 @@ class AuthentikPhase(Phase):
     #   /web/dist/assets/images/<name>  ← background
     def _branding_volumes(self, ctx: PhaseContext) -> list[str]:
         b = self._acfg(ctx).get("branding") or {}
-        pairs = [("logo", "icons"), ("background", "images")]
         vols: list[str] = []
-        for key, subdir in pairs:
+        for key, (subdir, _field) in BRAND_FIELDS.items():
             src = str(b.get(key) or "").strip()
             if not src:
                 continue
@@ -227,8 +276,10 @@ class AuthentikPhase(Phase):
         named = [k for k in ("logo", "background") if b.get(k)]
         if named:
             lines.append(f"branding: upload {', '.join(named)} to every node under "
-                         "/opt/authentik/branding/ and bind-mount over "
-                         "/web/dist/assets/{icons,images}/")
+                         "/opt/authentik/branding/, bind-mount over "
+                         "/web/dist/assets/{icons,images}/, AND point the default "
+                         "brand at /static/dist/assets/... via the API (mounting "
+                         "alone leaves the stock logo showing)")
         lines.append("verify: server+worker healthy on all nodes, /-/health/ready/ 200 "
                      "per node, API answers with the bootstrap token")
         return lines
@@ -325,6 +376,12 @@ class AuthentikPhase(Phase):
                 if not good:
                     dump_logs(ctx, conn, "server")
                     raise RuntimeError(f"{node} never became healthy")
+
+        # the brand record is set last: it needs a live API, and it is the half
+        # that actually makes the uploaded assets visible
+        branding = acfg.get("branding") or {}
+        if branding:
+            apply_brand(ctx, ctx.fleet.conns[0], branding, sec["bootstrap_token"])
 
     # ---------------------------------------------------------------- verify
     def verify(self, ctx: PhaseContext) -> bool:

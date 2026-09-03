@@ -159,8 +159,12 @@ authentik:
   # Custom branding. Paths are on THIS workstation; akropolis uploads them to
   # every node under /opt/authentik/branding/ and derives the bind-mounts over
   # /web/dist/assets/{icons,images}/, so files and volume list cannot drift.
+  # akropolis also points the DEFAULT brand at these via the API after startup
+  # (/static/dist/assets/...), because mounting the file alone leaves the stock
+  # logo showing — the brand record in the database is what selects the asset.
   # branding:
   #   logo: ./branding/uop_logo.png
+  #   favicon: ./branding/uop_favicon.png
   #   background: ./branding/uop_background.jpg
   # SMTP for password resets / email stages (guide 7.x .env block).
   # Omit the whole section → the authentik phase asks interactively and pins

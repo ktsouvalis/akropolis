@@ -50,7 +50,7 @@ import shlex
 import time
 from pathlib import Path
 
-from .authentik_phase import dump_logs, wait_healthy, wait_one_healthy
+from .authentik_phase import apply_brand, dump_logs, wait_healthy, wait_one_healthy
 from .base import Phase, PhaseContext
 
 PSQL = "sudo -u postgres psql -h /var/run/postgresql -p 5432 -v ON_ERROR_STOP=1"
@@ -420,6 +420,15 @@ GRANT ALL ON SCHEMA public TO {owner};
         stray = int(r.out.strip() or -1)
         ctx.record(leader.node.name, "verify: all public tables owned by the app role",
                    stray == 0, f"{stray} owned by another role" if stray else "")
+
+        # The restored dump carries its OWN brand row, which may point at assets
+        # this cluster does not have (broken image on the login page) or at the
+        # stock logo. Re-apply the configured branding so the database and the
+        # mounted files agree again.
+        branding = (ctx.cfg.raw.get("authentik") or {}).get("branding") or {}
+        token_now = ctx.state.data["generated"].get("authentik_bootstrap_token", "")
+        if branding and token_now:
+            apply_brand(ctx, ctx.fleet.conns[0], branding, token_now)
 
         # The restore replaced the database the bootstrap API token lived in.
         # That token is what the monitor authenticates with, so it is almost
