@@ -120,3 +120,26 @@ Two findings:
 Operational note: prefer dumping with a `pg_dump` matching the target major
 version. The strip is a safety net for dumps you did not produce (backup
 appliances, colleagues' workstations with newer client tools).
+
+
+## Restored database vs compose's dependency wait (Sep 2026, ESDA Lab)
+
+Right after the GUC-skew fix, the same restore failed again — this time on
+startup: `dependency failed to start: container authentik-worker-1 is
+unhealthy`. The restore itself was clean; the worker was migrating the
+restored data (real user counts, not an empty schema) and had not yet begun
+answering its liveness port when compose's dependency wait expired.
+
+The budget is baked into the compose file: `start_period: 60s` +
+`interval: 30s` x `retries: 3`, so `docker compose up -d` gives up ~150s
+after the worker starts and tears down the `up` mid-migration. Fresh
+bootstraps never hit it because an empty schema migrates in seconds.
+
+Fix (v0.10.3): on the restore path the worker is started alone with
+`up -d --no-deps worker`, so no dependent service is watching a clock, and
+gated on `restore.migration_timeout` (default 3600s). The server is started
+only after the worker reports healthy. Nodes 2 and 3 are unaffected — they
+find a migrated schema — so they keep the plain `up -d`.
+
+Also added: whenever a health gate expires, akropolis prints the tail of the
+container log instead of advising the operator to go and read it.

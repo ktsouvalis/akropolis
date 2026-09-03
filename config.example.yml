@@ -163,6 +163,8 @@ secrets:
 #   sql_file: ./dumps/authentik-prod.sql     # .sql or .sql.gz
 #   database: authentik                      # default
 #   timeout: 3600                            # psql budget, seconds
+#   migration_timeout: 3600                  # budget for the worker to migrate the
+#                                            # restored data before the server joins
 
 # ---------------------------------------------------------------------------
 # Handoff

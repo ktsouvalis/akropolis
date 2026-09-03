@@ -26,9 +26,10 @@ every step is gated:
      `psql -v ON_ERROR_STOP=1` the dump in — any error stops the phase with
      authentik still down, never half-up on half-data
   6. delete the dump from the node (it contains every secret the IdP holds)
-  7. start authentik back exactly like a bootstrap: leader alone first, health
-     gate covering any migrations the server applies on top of the restored
-     schema (dump from an older tag), then the other nodes one at a time
+  7. start the WORKER alone (`up -d --no-deps`) and gate on it with our own
+     budget: migrating real restored data outlasts compose's dependency wait
+     (~150s), which would abort the whole `up` mid-migration. The server
+     follows once the worker is healthy, then the other nodes one at a time
 
 Replays: the phase is marked done afterwards; `--replay restore` re-runs it
 (e.g. a fresher dump at real cutover). The dump's sha256 and timestamp are
@@ -44,7 +45,7 @@ import shlex
 import time
 from pathlib import Path
 
-from .authentik_phase import wait_healthy
+from .authentik_phase import dump_logs, wait_healthy, wait_one_healthy
 from .base import Phase, PhaseContext
 
 PSQL = "sudo -u postgres psql -h /var/run/postgresql -p 5432 -v ON_ERROR_STOP=1"
@@ -137,8 +138,11 @@ class RestorePhase(Phase):
             "psql -v ON_ERROR_STOP=1 the dump (any error stops with authentik down, "
             "never half-up on half-data)",
             "delete the dump from the node (it contains every secret the IdP holds)",
-            "start authentik back bootstrap-style: leader alone first, health gate "
-            "covers migrations on top of the restored schema, then the others",
+            "start the WORKER alone first and gate on OUR budget "
+            "(restore.migration_timeout, default 3600s): migrating restored data "
+            "outlasts compose's ~150s dependency wait and would abort the up",
+            "then the server on that node, then the other nodes one at a time; "
+            "container logs are printed automatically if a gate expires",
             "verify: restored DB has tables + users, all nodes healthy + ready",
         ]
 
@@ -250,17 +254,44 @@ class RestorePhase(Phase):
         ctx.state.save()
 
         # --- 6. authentik back up, bootstrap-style ----------------------------
+        # A restored database is NOT a fresh one: the worker migrates real data
+        # (tens of thousands of users) before it answers its liveness port,
+        # and that routinely outlasts compose's own dependency wait —
+        # start_period 60s + interval 30s x retries 3 ≈ 150s, after which
+        # `docker compose up -d` aborts the whole thing with "dependency failed
+        # to start" while the migration is running perfectly well. So the
+        # worker is started ALONE here, with no dependent service watching a
+        # clock, and gated on OUR budget; the server follows once it is healthy.
         first = next(c for c in ctx.fleet if c.node.bootstrap_leader)
         others = [c for c in ctx.fleet if not c.node.bootstrap_leader]
+        mig_timeout = int(self._rcfg(ctx).get("migration_timeout", 3600))
 
-        ctx.begin(first.node.name, "starting authentik", "alone first")
+        ctx.begin(first.node.name, "starting worker alone", "migrations on restored data")
+        r = first.run("cd /opt/authentik && docker compose up -d --no-deps worker",
+                      timeout=1800)
+        ctx.record(first.node.name, "worker starting", r.ok, r.err if not r.ok else "")
+        if not r.ok:
+            raise RuntimeError(f"could not start the worker on {first.node.name}")
+
+        good = wait_one_healthy(ctx, first, "authentik-worker-1", timeout=mig_timeout,
+                                label="migrating restored data")
+        ctx.record(first.node.name, "worker healthy (migrations complete)", good,
+                   "" if good else f"still not healthy after {mig_timeout}s")
+        if not good:
+            dump_logs(ctx, first, "worker")
+            raise RuntimeError(
+                "worker never finished migrating the restored database within "
+                f"{mig_timeout}s — raise restore.migration_timeout if the log above "
+                "shows migrations still progressing, otherwise fix the dump")
+
+        ctx.begin(first.node.name, "starting authentik", "server joins migrated schema")
         r = first.run("cd /opt/authentik && docker compose up -d", timeout=1800)
         ctx.record(first.node.name, "authentik starting", r.ok, r.err if not r.ok else "")
-        good = r.ok and wait_healthy(ctx, first, timeout=900,
-                                     label="migrations on restored schema")
+        good = r.ok and wait_healthy(ctx, first, timeout=900)
         ctx.record(first.node.name, "healthy on restored data", good,
-                   "" if good else "never reached healthy — docker compose logs")
+                   "" if good else "never reached healthy")
         if not good:
+            dump_logs(ctx, first, "server")
             raise RuntimeError("first node never became healthy on the restored "
                                "database — stopping before starting the others")
 
@@ -272,6 +303,7 @@ class RestorePhase(Phase):
             good = r.ok and wait_healthy(ctx, conn, timeout=900)
             ctx.record(node, "healthy", good, "" if good else "never reached healthy")
             if not good:
+                dump_logs(ctx, conn, "server")
                 raise RuntimeError(f"{node} never became healthy after the restore")
 
     # ---------------------------------------------------------------- verify

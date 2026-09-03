@@ -35,7 +35,7 @@ import secrets as pysecrets
 import shlex
 
 from ..remote import push_file, render, wait_for
-from .base import Phase, PhaseContext
+from .base import Phase, PhaseContext, console
 
 HEALTHY = ("docker inspect -f '{{.State.Health.Status}}' authentik-server-1 "
            "authentik-worker-1 2>/dev/null | sort -u")
@@ -52,6 +52,37 @@ def wait_healthy(ctx, conn, timeout: float, label: str = "waiting for healthy") 
                   expect="0", timeout=timeout, interval=10,
                   tick=lambda el: ctx.tick(f"{int(el)}s / {int(timeout)}s"))
     return ok and conn.run(f"{HEALTHY}").out.strip() == "healthy"
+
+
+def wait_one_healthy(ctx, conn, container: str, timeout: float,
+                     label: str = "waiting for healthy") -> bool:
+    """Gate on ONE container's health, with a live line.
+
+    Needed when a service is started alone (`up -d --no-deps`): the pair gate
+    above would never pass, because the other container is deliberately not
+    running yet.
+    """
+    ctx.begin(conn.node.name, label, f"0s / {int(timeout)}s")
+    return wait_for(
+        conn,
+        "docker inspect -f '{{.State.Health.Status}}' " + container + " 2>/dev/null",
+        expect="healthy", timeout=timeout, interval=10,
+        tick=lambda el: ctx.tick(f"{int(el)}s / {int(timeout)}s"))
+
+
+def dump_logs(ctx, conn, service: str, lines: int = 40) -> None:
+    """Print the tail of a container's log when a gate fails.
+
+    An expired health gate tells the operator nothing on its own; the reason
+    is always in the log, and sending someone to SSH for it is a wasted
+    round-trip when the connection is already open.
+    """
+    r = conn.run(f"cd /opt/authentik && docker compose logs --no-color "
+                 f"--tail {lines} {service} 2>&1", timeout=120)
+    if r.out:
+        console.rule(f"[red]{conn.node.name}: last {lines} lines of {service} log[/red]")
+        console.print(r.out, markup=False, highlight=False)
+        console.rule()
 
 
 class AuthentikPhase(Phase):
@@ -212,6 +243,7 @@ class AuthentikPhase(Phase):
                 ctx.record(node, "rolling: healthy", good,
                            "" if good else "containers never reached healthy")
                 if not good:
+                    dump_logs(ctx, conn, "server")
                     raise RuntimeError(f"{node} unhealthy after rolling update — "
                                        "stopping with the remaining nodes still serving")
         else:
@@ -228,6 +260,8 @@ class AuthentikPhase(Phase):
                        good, "" if good else
                        "never reached healthy — docker compose logs on the node")
             if not good:
+                dump_logs(ctx, leader, "worker")
+                dump_logs(ctx, leader, "server")
                 raise RuntimeError("bootstrap node never became healthy — stopping "
                                    "before starting the other nodes")
 
@@ -240,6 +274,7 @@ class AuthentikPhase(Phase):
                 ctx.record(node, "healthy", good,
                            "" if good else "never reached healthy")
                 if not good:
+                    dump_logs(ctx, conn, "server")
                     raise RuntimeError(f"{node} never became healthy")
 
     # ---------------------------------------------------------------- verify
