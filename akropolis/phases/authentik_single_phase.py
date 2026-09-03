@@ -13,9 +13,12 @@ is the same on both topologies).
 
 TODO(cleanup): _email()/_branding_volumes()/_acfg() below are near-identical
 copies of the same methods on AuthentikPhase (HA). Left duplicated rather
-than touching that already-deployed file in this patch; unifying both into
-a shared module — along with wiring the new error-reporting prompt into the
-HA phase, which still hardcodes AUTHENTIK_ERROR_REPORTING__ENABLED=false —
+than restructuring that already-deployed file in this patch — the only
+change made there is additive (an optional `port` parameter on
+apply_brand/patch_brand, default 9443, so HA is unaffected — see
+authentik_certs_phase.py, which reuses patch_brand at port 443). Unifying
+_email/_branding_volumes/_acfg, and wiring the error-reporting prompt into
+the HA phase (which still hardcodes AUTHENTIK_ERROR_REPORTING__ENABLED=false),
 is a good follow-up once single-node has seen a real run.
 """
 
@@ -145,7 +148,7 @@ class AuthentikSinglePhase(Phase):
             f"render /opt/authentik/.env (0600) + docker-compose.yml on {cfg.nodes[0].name} — "
             f"tag {cfg.authentik_tag}, PostgreSQL as a postgres:16-alpine container "
             "(loopback-only :5432, named volume `database`)",
-            "server/worker on network_mode: host, listen ports 9080/9443/9300 (server) "
+            "server/worker on network_mode: host, listen ports 9080/443/9300 (server) "
             "9081/9301 (worker) — python3/urllib healthchecks, "
             "depends_on: worker: condition: service_healthy on server",
             "AUTHENTIK_SECRET_KEY / postgres password / bootstrap admin password / "
@@ -238,7 +241,7 @@ class AuthentikSinglePhase(Phase):
 
         branding_cfg = acfg.get("branding") or {}
         if branding_cfg:
-            apply_brand(ctx, conn, branding_cfg, sec["bootstrap_token"])
+            apply_brand(ctx, conn, branding_cfg, sec["bootstrap_token"], port=443)
 
     # ---------------------------------------------------------------- verify
     def verify(self, ctx: PhaseContext) -> bool:
@@ -248,7 +251,7 @@ class AuthentikSinglePhase(Phase):
         ctx.record(node, "verify: containers healthy", good, "")
 
         r = conn.run("curl -sk -o /dev/null -w '%{http_code}' "
-                     "https://127.0.0.1:9443/-/health/ready/")
+                     "https://127.0.0.1:443/-/health/ready/")
         ready = r.out in ("200", "204")
         ctx.record(node, "verify: /-/health/ready/", ready, f"HTTP {r.out}")
 
@@ -256,7 +259,7 @@ class AuthentikSinglePhase(Phase):
         r2 = conn.run(
             f"curl -sk -H {shlex.quote('Authorization: Bearer ' + token)} "
             f"-o /dev/null -w '%{{http_code}}' "
-            f"https://127.0.0.1:9443/api/v3/admin/version/")
+            f"https://127.0.0.1:443/api/v3/admin/version/")
         api = r2.out == "200"
         ctx.record(node, "verify: API with bootstrap token", api, f"HTTP {r2.out}")
         return good and ready and api

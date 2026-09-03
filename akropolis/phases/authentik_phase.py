@@ -81,7 +81,32 @@ BRAND_FIELDS = {
 }
 
 
-def apply_brand(ctx, conn, branding: dict, token: str) -> bool:
+def find_default_brand_uuid(ctx, conn, token: str, port: int = 9443) -> str:
+    """Look up the UUID of the default brand. Empty string if not found."""
+    auth = shlex.quote("Authorization: Bearer " + token)
+    base = f"https://127.0.0.1:{port}/api/v3/core/brands/"
+    r = conn.run(f"curl -sk -H {auth} {shlex.quote(base + '?ordering=domain')} "
+                 "| jq -r '.results[] | select(.default==true) | .brand_uuid' | head -1",
+                 timeout=60)
+    return r.out.strip() if r.ok else ""
+
+
+def patch_brand(ctx, conn, token: str, fields: dict, port: int = 9443) -> str:
+    """PATCH the default brand with `fields`. Returns the HTTP status code
+    (as a string; "" if the default brand lookup itself failed)."""
+    auth = shlex.quote("Authorization: Bearer " + token)
+    base = f"https://127.0.0.1:{port}/api/v3/core/brands/"
+    uuid = find_default_brand_uuid(ctx, conn, token, port=port)
+    if not uuid:
+        return ""
+    payload = json.dumps(fields)
+    r = conn.run(f"curl -sk -X PATCH -H {auth} -H 'Content-Type: application/json' "
+                 f"-d {shlex.quote(payload)} -o /dev/null -w '%{{http_code}}' "
+                 f"{shlex.quote(base + uuid + '/')}", timeout=60)
+    return r.out.strip()
+
+
+def apply_brand(ctx, conn, branding: dict, token: str, port: int = 9443) -> bool:
     """Point the DEFAULT brand at the mounted assets. Idempotent."""
     fields = {}
     for key, (subdir, field) in BRAND_FIELDS.items():
@@ -91,27 +116,17 @@ def apply_brand(ctx, conn, branding: dict, token: str) -> bool:
     if not fields:
         return True
 
-    auth = shlex.quote("Authorization: Bearer " + token)
-    base = "https://127.0.0.1:9443/api/v3/core/brands/"
     ctx.begin(conn.node.name, "pointing default brand at the mounted assets")
-    r = conn.run(f"curl -sk -H {auth} {shlex.quote(base + '?ordering=domain')} "
-                 "| jq -r '.results[] | select(.default==true) | .brand_uuid' | head -1",
-                 timeout=60)
-    uuid = r.out.strip()
-    if not r.ok or not uuid:
+    if not find_default_brand_uuid(ctx, conn, token, port=port):
         ctx.record(conn.node.name, "default brand lookup", False,
                    "could not find the default brand — set the logo manually in "
                    "System > Brands", warn=True)
         return False
-
-    payload = json.dumps(fields)
-    r = conn.run(f"curl -sk -X PATCH -H {auth} -H 'Content-Type: application/json' "
-                 f"-d {shlex.quote(payload)} -o /dev/null -w '%{{http_code}}' "
-                 f"{shlex.quote(base + uuid + '/')}", timeout=60)
-    ok = r.out.strip() == "200"
+    code = patch_brand(ctx, conn, token, fields, port=port)
+    ok = code == "200"
     ctx.record(conn.node.name, "default brand updated", ok,
                ", ".join(f"{k}={v}" for k, v in fields.items()) if ok
-               else f"HTTP {r.out} — set it manually in System > Brands", warn=not ok)
+               else f"HTTP {code} — set it manually in System > Brands", warn=not ok)
     return ok
 
 

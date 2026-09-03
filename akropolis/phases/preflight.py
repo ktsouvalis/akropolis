@@ -15,30 +15,38 @@ from .base import Phase, PhaseContext
 
 # What each completed phase legitimately occupies. Preflight consults the
 # state file so a mid-lifecycle re-run (resume, --replay of a later phase)
-# doesn't fail on the cluster's own footprint.
-PHASE_PORTS: dict[str, set[int]] = {
-    "etcd": {2379, 2380},
-    "patroni": {5432, 8008},
-    "haproxy": {5000, 5001, 9000},
-    "nginx-keepalived": {80, 443},
-    "nginx": {80, 443},              # single topology's keepalived-less nginx
-    "authentik": {9080, 9081, 9300, 9301, 9443},
+# doesn't fail on the cluster's own footprint. Nested by topology: `authentik`
+# means something port-wise different on each (HA proxies through nginx on
+# 9443 internally; single serves 443 directly, see authentik-single-env.j2 —
+# same phase *name*, different footprint, so one shared dict would be wrong
+# for whichever topology looked it up second).
+PHASE_PORTS: dict[str, dict[str, set[int]]] = {
+    "ha": {
+        "etcd": {2379, 2380},
+        "patroni": {5432, 8008},
+        "haproxy": {5000, 5001, 9000},
+        "nginx-keepalived": {80, 443},
+        "authentik": {9080, 9081, 9300, 9301, 9443},
+    },
+    "single": {
+        "authentik": {443, 9080, 9081, 9300, 9301},
+        # certs: no new port footprint — it only places files and restarts
+        # the worker container that authentik already started.
+    },
 }
 PHASE_CONTAINERS: dict[str, str] = {
     "etcd": "etcd",
     "haproxy": "haproxy",
     "nginx-keepalived": "nginx",
-    "nginx": "nginx",
     "authentik": "authentik",
 }
 
 # Phase names that can legitimately have already run, per topology — used to
 # compute the "expected footprint" a mid-lifecycle preflight should not
-# complain about. Single topology's authentik/nginx phases don't exist yet
-# (next patch); listed here so preflight is forward-compatible once they do.
+# complain about.
 PHASES_BY_TOPOLOGY: dict[str, tuple[str, ...]] = {
     "ha": ("base", "etcd", "patroni", "haproxy", "nginx-keepalived", "authentik", "handoff"),
-    "single": ("base", "tls", "authentik", "nginx", "handoff"),
+    "single": ("base", "authentik", "certs"),
 }
 
 
@@ -88,7 +96,7 @@ class PreflightPhase(Phase):
         midlife = bool(done)  # some phase completed — we own these hosts now
         expected_ports: set[int] = set()
         for p in done:
-            expected_ports |= PHASE_PORTS.get(p, set())
+            expected_ports |= PHASE_PORTS.get(cfg.topology, {}).get(p, set())
 
         for conn in ctx.fleet:
             node = conn.node.name

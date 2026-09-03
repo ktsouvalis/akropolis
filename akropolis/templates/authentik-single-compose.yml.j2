@@ -32,7 +32,7 @@ services:
     image: ghcr.io/goauthentik/server:${AUTHENTIK_TAG}
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "python3", "-c", "import urllib.request,ssl,sys; ctx=ssl.create_default_context(); ctx.check_hostname=False; ctx.verify_mode=ssl.CERT_NONE; sys.exit(0) if urllib.request.urlopen('https://localhost:9443/-/health/live/', timeout=5, context=ctx).status == 200 else sys.exit(1)"]
+      test: ["CMD", "python3", "-c", "import urllib.request,ssl,sys; ctx=ssl.create_default_context(); ctx.check_hostname=False; ctx.verify_mode=ssl.CERT_NONE; sys.exit(0) if urllib.request.urlopen('https://localhost:443/-/health/live/', timeout=5, context=ctx).status == 200 else sys.exit(1)"]
       interval: 30s
       timeout: 10s
       retries: 3

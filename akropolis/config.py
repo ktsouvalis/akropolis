@@ -28,11 +28,14 @@ DEFAULT_AUTHENTIK_TAG = {"ha": "2026.5.6", "single": "2026.8.1"}
 # Ports that must be free on every node before provisioning (SSH excluded).
 # HA: full stack (etcd, Patroni, HAProxy, nginx+keepalived, Authentik).
 REQUIRED_FREE_PORTS = [80, 443, 2379, 2380, 5432, 5000, 5001, 8008, 9000, 9080, 9081, 9300, 9301, 9443]
-# single: no etcd/Patroni/HAProxy at all — PostgreSQL is a container on an
-# internal Docker network, never published to the host. Only nginx (TLS
-# termination, no keepalived — one node, nothing to fail over to) and
-# Authentik's own listeners need host ports.
-REQUIRED_FREE_PORTS_SINGLE = [80, 443, 9080, 9081, 9300, 9301, 9443]
+# single: no etcd/Patroni/HAProxy at all — PostgreSQL never leaves the internal
+# Docker network. No nginx either (see NOTES.md: authentik's own core
+# webserver serves HTTPS directly — Web Certificate + /certs discovery —
+# since the target deployment is reached by NAT with no port translation, so
+# whatever the node listens on IS what the public sees). Server HTTPS moves
+# 9443 -> 443; 80 stays free for certbot's standalone ACME challenge, not
+# bound by anything akropolis itself renders.
+REQUIRED_FREE_PORTS_SINGLE = [80, 443, 9080, 9081, 9300, 9301]
 
 
 class ConfigError(Exception):

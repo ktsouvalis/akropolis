@@ -15,11 +15,13 @@ AUTHENTIK_POSTGRESQL__PASSWORD={{ pg_pass }}
 
 AUTHENTIK_SECRET_KEY={{ secret_key }}
 
-# Not required by network_mode: host the way it is on the HA cluster (no
-# HAProxy claiming 9000 here) — kept anyway so this .env, the healthchecks,
-# and the nginx-single upstream target are identical to the HA path.
+# No nginx in front for single-node: the node is reached by NAT with no port
+# translation (public 443 -> this node's 443, unchanged), so authentik's own
+# core webserver has to serve HTTPS directly on the standard port. HTTP stays
+# on 9080 (internal only) — NOT 80, so certbot standalone can bind 80 for the
+# ACME challenge without a conflict, both for issuance and every renewal.
 AUTHENTIK_LISTEN__HTTP=0.0.0.0:9080
-AUTHENTIK_LISTEN__HTTPS=0.0.0.0:9443
+AUTHENTIK_LISTEN__HTTPS=0.0.0.0:443
 AUTHENTIK_LISTEN__METRICS=0.0.0.0:9300
 
 AUTHENTIK_ERROR_REPORTING__ENABLED={{ 'true' if error_reporting else 'false' }}

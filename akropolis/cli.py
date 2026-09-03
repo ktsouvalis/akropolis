@@ -21,6 +21,7 @@ from .init_wizard import run_wizard
 from .phases.base import PhaseContext, run_phases
 from .phases.authentik_phase import AuthentikPhase
 from .phases.authentik_single_phase import AuthentikSinglePhase
+from .phases.authentik_certs_phase import AuthentikCertsPhase
 from .phases.base_setup import BasePhase
 from .phases.clean_phase import CleanPhase
 from .phases.etcd_phase import EtcdPhase
@@ -38,10 +39,13 @@ console = Console()
 
 # Ordered phase pipeline — topology-dependent. `ha` is the full 3-node stack;
 # `single` drops etcd/Patroni/HAProxy/keepalived entirely (see config.py
-# DEFAULT_AUTHENTIK_TAG / REQUIRED_FREE_PORTS_SINGLE for the reasoning).
-# NOTE: single-node `nginx` (TLS-terminating, no keepalived) and `restore`
-# aren't wired in yet, and `clean` doesn't know single's paths yet either —
-# next patches. site.topology: single can provision through `authentik` today.
+# DEFAULT_AUTHENTIK_TAG / REQUIRED_FREE_PORTS_SINGLE for the reasoning), and
+# has no `tls`/nginx phase either — authentik's own core webserver serves
+# HTTPS directly (port 443 — see authentik-single-env.j2), so `certs` talks
+# to authentik's own certificate discovery + Web Certificate API instead of
+# rendering an nginx cert directory (see authentik_certs_phase.py). NOTE:
+# single-node `restore` isn't wired in yet, and `clean` doesn't know single's
+# paths yet either — next patches.
 PIPELINE_HA = [
     PreflightPhase(),
     BasePhase(),
@@ -57,8 +61,8 @@ PIPELINE_HA = [
 PIPELINE_SINGLE = [
     PreflightPhase(),
     BasePhase(),
-    TLSPhase(),
     AuthentikSinglePhase(),
+    AuthentikCertsPhase(),
 ]
 
 

@@ -39,7 +39,7 @@ No Redis: Authentik ≥ 2025.10 keeps sessions, cache, tasks, and WebSocket stat
 | restore | ✅ implemented (optional — skipped unless `restore.sql_file` is set) |
 | handoff | ✅ implemented, tested (emits the real ak-monitor schema) |
 | `akropolis monitor` | 🚧 stub (will fold in ak-monitor) |
-| `site.topology: single` | 🚧 in progress — preflight, base, tls, authentik (postgres-in-container) done; nginx (no keepalived), restore, handoff, clean next |
+| `site.topology: single` | 🚧 in progress — preflight, base, authentik (postgres-in-container), certs (authentik's own Web Certificate, no nginx) done; restore, handoff, clean next |
 
 **The 3-node HA provisioning pipeline is complete** — every phase from preflight to handoff is implemented. First full run against real VMs is the remaining milestone. A single-node topology (no VIP, PostgreSQL as a plain container, intended as a production-fallback instance) is being scaffolded alongside it — see `site.topology` in the configuration reference.
 
@@ -268,37 +268,59 @@ it to `single` changes the shape of the pipeline, not just its size:
 - **No VIP, no keepalived** — nothing to fail over to. `network.vip` is
   neither required nor validated.
 - **No etcd, no Patroni, no HAProxy** — PostgreSQL runs as a plain
-  `postgres:16-alpine` container instead of a bare-metal Patroni-managed
-  instance; there is no leader to route to.
-- **nginx still terminates TLS locally** (`tls.provider` works exactly as in
-  `ha`) — a single node is meant to stand on its own behind a NAT (public IP
-  → private IP, 1:1) rather than depend on an external reverse proxy, so
-  akropolis owns TLS termination here too, just without keepalived.
+  `postgres:16-alpine` container (loopback-only `127.0.0.1:5432`, same
+  "always local, never a remote IP" reasoning as an HA node's `127.0.0.1:5000`
+  HAProxy connection) instead of a bare-metal Patroni-managed instance.
+- **No nginx either.** A single node is meant to stand on its own behind a
+  NAT with no port translation (public 443 → this node's 443, unchanged) —
+  so unlike `ha`, akropolis doesn't put its own reverse proxy in front.
+  authentik's **own core webserver** serves HTTPS directly on 443 instead of
+  the usual 9080/9443 offset. It gets there through mechanisms authentik
+  already ships: a `certs` directory mounted at `/certs` on the worker
+  container (certificate *discovery* — see [authentik's certificate
+  docs](https://docs.goauthentik.io/sys-mgmt/certificates/)) and each
+  brand's **Web Certificate** field, which akropolis PATCHes via the API —
+  the same mechanism already used for the branding logo/favicon.
 - **A different default `authentik.tag`**: `ha` stays pinned to `2026.5.6`
   (2026.8.0 hit a multi-node embedded-outpost restart loop — see
   NOTES.md); `single` defaults to `2026.8.1`, since a single node has no
   multi-node outpost topology to trigger that bug. Set `authentik.tag`
   explicitly to override either default.
-- **Required free ports** drop to `80, 443, 9080, 9081, 9300, 9301, 9443` —
-  no etcd/Patroni/HAProxy ports, since PostgreSQL never leaves the internal
-  Docker network.
+- **Required free ports** drop to `80, 443, 9080, 9081, 9300, 9301` — no
+  etcd/Patroni/HAProxy ports (PostgreSQL never leaves the internal Docker
+  network), and 9443 becomes plain 443. Port 80 stays free by construction —
+  nothing akropolis renders binds it — so certbot can use it in standalone
+  mode for ACME issuance and renewal.
 
 Intended use: a fallback instance to bring up quickly if the HA cluster is
-down, not a smaller HA cluster. `preflight`, `base`, `tls`, and `authentik`
-are implemented and adapt to `single` today. `authentik` here has no
-bootstrap-vs-rolling split the way the HA phase does — with one node, Docker
-Compose's own `depends_on: condition: service_healthy` chain (postgresql →
-worker → server) is enough to prevent the exact problem that split exists to
-avoid on 3 nodes (migrations racing against one database), so `apply` is just
-render + `docker compose up -d` + a health gate. It also resolves the
-AUTHENTIK_ERROR_REPORTING__ENABLED guide-vs-code mismatch by making it an
-explicit `authentik.error_reporting` setting — config, or asked once and
-pinned in state, same pattern as `monitor.ip` — instead of a silent default;
-this is single-node-only for now, the HA phase still hardcodes `false`.
+down, not a smaller HA cluster. `preflight`, `base`, `authentik`, and `certs`
+are implemented and adapt to `single` today.
 
-Still missing: the `nginx` phase itself (TLS-terminating, no keepalived — so
-right now `authentik` finishes healthy but isn't reachable on 80/443 yet), a
-single-node `restore`, `handoff`, and a single-node-aware `clean`.
+`authentik` here has no bootstrap-vs-rolling split the way the HA phase
+does — with one node, Docker Compose's own `depends_on: condition:
+service_healthy` chain (postgresql → worker → server) already prevents the
+problem that split exists for on 3 nodes (migrations racing against one
+database), so `apply` is just render + `docker compose up -d` + a health
+gate. It also resolves the AUTHENTIK_ERROR_REPORTING__ENABLED guide-vs-code
+mismatch by making it an explicit `authentik.error_reporting` setting —
+config, or asked once and pinned in state, same pattern as `monitor.ip` —
+instead of a silent default; this is single-node-only for now, the HA phase
+still hardcodes `false`.
+
+`certs` runs *after* `authentik` (it needs a live API to PATCH the brand) and
+depends on `tls.provider`: `none`/`self_signed` are a no-op — authentik
+already generates and serves its own self-signed certificate on first boot,
+so there's nothing to add; `acme` runs certbot in `--standalone` mode (port
+80 is free by construction) with a renewal deploy hook that re-copies the
+cert and restarts the worker on every future renewal; `import` validates the
+provided cert on the workstation first (key↔cert match, SAN coverage,
+expiry — the same checks the HA `tls` phase runs) and pushes it to the node.
+Either way the cert lands in authentik's discovery folder, the worker is
+restarted so discovery runs immediately, and the default brand's Web
+Certificate is set to the result.
+
+Still missing: a single-node `restore`, `handoff`, and a single-node-aware
+`clean`.
 
 ## Cleaning a site
 
