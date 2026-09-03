@@ -21,7 +21,7 @@ PHASE_PORTS: dict[str, set[int]] = {
     "patroni": {5432, 8008},
     "haproxy": {5000, 5001, 9000},
     "nginx-keepalived": {80, 443},
-    "authentik": {9080, 9300, 9443},
+    "authentik": {9080, 9081, 9300, 9301, 9443},
 }
 PHASE_CONTAINERS: dict[str, str] = {
     "etcd": "etcd",

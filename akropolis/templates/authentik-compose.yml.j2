@@ -26,8 +26,18 @@ services:
     command: worker
     image: ghcr.io/goauthentik/server:${AUTHENTIK_TAG}
     restart: unless-stopped
+    environment:
+      # The worker inherits AUTHENTIK_LISTEN__* from the shared .env and its
+      # liveness server binds them. Under network_mode: host and the
+      # depends_on ordering, the worker starts FIRST and squats the server's
+      # HTTP/metrics ports (9080/9300); the Go router's binds then fail
+      # silently and anything talking to 9080 reaches the worker's liveness
+      # endpoint instead — 200 with an empty body on every path. Give the
+      # worker its own ports so the server actually owns 9080/9300.
+      AUTHENTIK_LISTEN__HTTP: 0.0.0.0:9081
+      AUTHENTIK_LISTEN__METRICS: 0.0.0.0:9301
     healthcheck:
-      test: ["CMD", "python3", "-c", "import urllib.request,sys; sys.exit(0) if urllib.request.urlopen('http://localhost:9080/-/health/live/', timeout=5).status == 200 else sys.exit(1)"]
+      test: ["CMD", "python3", "-c", "import urllib.request,sys; sys.exit(0) if urllib.request.urlopen('http://localhost:9081/-/health/live/', timeout=5).status == 200 else sys.exit(1)"]
       interval: 30s
       timeout: 10s
       retries: 3

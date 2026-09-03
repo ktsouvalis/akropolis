@@ -18,7 +18,7 @@ VALID_TLS_PROVIDERS = {"none", "self_signed", "acme", "import"}
 VALID_SSH_AUTH = {"key", "agent", "password"}
 
 # Ports that must be free on every node before provisioning (SSH excluded).
-REQUIRED_FREE_PORTS = [80, 443, 2379, 2380, 5432, 5000, 5001, 8008, 9000, 9080, 9300, 9443]
+REQUIRED_FREE_PORTS = [80, 443, 2379, 2380, 5432, 5000, 5001, 8008, 9000, 9080, 9081, 9300, 9301, 9443]
 
 
 class ConfigError(Exception):
