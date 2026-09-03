@@ -134,6 +134,21 @@ def run_wizard(output: str | None = None) -> Path:
             raise SystemExit("aborted — nothing written")
     with open(out, "w") as f:
         yaml.safe_dump(cfg, f, sort_keys=False, default_flow_style=False)
+        # Signpost, not a question: the dump rarely exists at init time, and
+        # restore is a cutover-time move — but a section that isn't visible in
+        # the generated file may as well not exist. yaml.safe_dump can't emit
+        # comments, so it's appended by hand.
+        f.write(
+            "\n"
+            "# Optional — database restore (the migration/cutover move).\n"
+            "# Uncomment and set the dump path (on THIS workstation), then run:\n"
+            "#   akropolis provision <this file> --replay restore\n"
+            "# DESTRUCTIVE when enabled: drops the current database first.\n"
+            "# restore:\n"
+            "#   sql_file: ./dumps/authentik-prod.sql   # .sql or .sql.gz\n"
+            "#   database: authentik                    # default\n"
+            "#   timeout: 3600                          # psql budget, seconds\n"
+        )
     console.print(f"\n[green]wrote {out}[/green] — review it, then run: "
                   f"[bold]akropolis provision {out}[/bold]")
     return out
