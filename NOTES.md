@@ -249,3 +249,23 @@ stub_status server on :8080 allows loopback and the node subnet only, and the
 monitor runs from a workstation outside it, so nginx answered 403. monitor.ip
 is now added to `stub_status_allow` automatically — the same host that gets
 the UFW opening in the base phase.
+
+
+## SFTP cannot sudo (Sep 2026)
+
+First run with branding failed on `[Errno 13] Permission denied`. `conn.put()`
+is SFTP, which runs as the SSH user; `sudo` applies to `run()` only. The
+branding directory is created root-owned by a privileged `run()`, and the
+SFTP write into it is then refused under `become: true`.
+
+The restore phase never hit this because it uploads to /tmp, which is world
+writable — so the flaw shipped hidden behind the one call site that happened
+to be safe.
+
+push_binary now stages in /tmp and installs with a privileged
+`mkdir && mv && chmod`, and re-checks the checksum AFTER the move (a
+truncated transfer would otherwise be bind-mounted into the container and
+serve a broken asset). The bare OSError is also wrapped: "[Errno 13]
+Permission denied" named neither the node, the file, nor which end refused.
+
+**Rule: any write outside /tmp must go through run(), not put().**

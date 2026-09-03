@@ -75,8 +75,15 @@ def push_binary(conn: NodeConn, local_path, remote_path: str,
     configs but wrong for binaries and wasteful for anything large. Returns
     True if the remote file changed; unchanged files are a detected no-op so
     re-runs don't churn the compose stack.
+
+    SFTP runs as the SSH user and CANNOT escalate — `sudo` applies to run()
+    only. Writing straight to a root-owned directory therefore fails with
+    EACCES under `become: true`. So the payload is staged in /tmp (world
+    writable) and moved into place by a privileged run(), which also owns the
+    mkdir, the final mode and the ownership.
     """
     import hashlib as _h
+    import os as _os
     from pathlib import Path as _P
 
     local = _P(local_path).expanduser()
@@ -84,14 +91,30 @@ def push_binary(conn: NodeConn, local_path, remote_path: str,
     r = conn.run(f"sha256sum {shlex.quote(remote_path)} 2>/dev/null | cut -d' ' -f1")
     if r.ok and r.out.strip() == digest:
         return False
+
     dirpath = remote_path.rsplit("/", 1)[0]
-    r = conn.run(f"mkdir -p {shlex.quote(dirpath)}")
+    staging = f"/tmp/.akropolis-upload-{_os.getpid()}-{local.name}"
+    try:
+        conn.put(str(local), staging)
+    except OSError as exc:
+        # a bare "[Errno 13] Permission denied" names neither the node, the
+        # file, nor which end of the transfer refused
+        raise RuntimeError(
+            f"[{conn.node.name}] SFTP upload of {local} to {staging} failed: {exc}"
+        ) from exc
+    r = conn.run(f"mkdir -p {shlex.quote(dirpath)} && "
+                 f"mv {shlex.quote(staging)} {shlex.quote(remote_path)} && "
+                 f"chmod {mode} {shlex.quote(remote_path)}", timeout=120)
     if not r.ok:
-        raise RuntimeError(f"[{conn.node.name}] mkdir {dirpath}: {r.err}")
-    conn.put(str(local), remote_path)
-    r = conn.run(f"chmod {mode} {shlex.quote(remote_path)}")
-    if not r.ok:
-        raise RuntimeError(f"[{conn.node.name}] chmod {remote_path}: {r.err}")
+        conn.run(f"rm -f {shlex.quote(staging)}")
+        raise RuntimeError(f"[{conn.node.name}] failed to install {remote_path}: {r.err}")
+
+    # integrity is checked after the move, not before: a truncated transfer
+    # would otherwise be mounted into the container and serve a broken asset
+    r = conn.run(f"sha256sum {shlex.quote(remote_path)} | cut -d' ' -f1")
+    if r.out.strip() != digest:
+        raise RuntimeError(f"[{conn.node.name}] {remote_path}: checksum mismatch "
+                           "after upload — transfer corrupted")
     return True
 
 
