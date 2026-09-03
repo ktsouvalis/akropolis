@@ -27,6 +27,7 @@ from .phases.nginx_keepalived_phase import NginxKeepalivedPhase
 from .phases.tls_phase import TLSPhase
 from .phases.patroni_phase import PatroniPhase
 from .phases.preflight import PreflightPhase
+from .phases.restore_phase import RestorePhase
 from .sshexec import Fleet
 from .state import State
 
@@ -42,6 +43,7 @@ PIPELINE = [
     TLSPhase(),
     NginxKeepalivedPhase(),
     AuthentikPhase(),
+    RestorePhase(),   # no-op unless restore.sql_file is set
     HandoffPhase(),
 ]
 

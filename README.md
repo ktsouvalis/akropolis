@@ -34,6 +34,7 @@ No Redis: Authentik ≥ 2025.10 keeps sessions, cache, tasks, and WebSocket stat
 | tls — `none` / `self_signed` / `acme` (staging) / `import` | ✅ implemented, tested |
 | nginx-keepalived (incl. ACME finalization) | ✅ implemented (configs validated with real `nginx -t` / `keepalived -t`) |
 | authentik | ✅ implemented (compose mirrors the production file verbatim) |
+| restore | ✅ implemented (optional — skipped unless `restore.sql_file` is set) |
 | handoff | ✅ implemented, tested (emits the real ak-monitor schema) |
 | `akropolis monitor` | 🚧 stub (will fold in ak-monitor) |
 
@@ -233,6 +234,12 @@ The `.env` carries the non-negotiables for this architecture: `AUTHENTIK_POSTGRE
 **SMTP email** (`AUTHENTIK_EMAIL__*`): the production `.env` carries a mail block — without it password recovery and email stages silently cannot send. Resolution order per value: `authentik.email` in the site config, else an interactive prompt at apply time whose answer is pinned in state (a `--replay` never re-asks and renders the same file). The SMTP password is never written to the config file: it is prompted with a hidden input once and pinned in state (0600). Set `authentik.email.enabled: false` to get no block and no questions.
 
 Verify: both containers `healthy` on every node, `/-/health/ready/` answers per node, and the API responds to the pinned bootstrap token — proving now the exact credential the monitor will depend on later.
+
+### restore *(optional)*
+
+The migration/cutover move, wired in as a phase between `authentik` and `handoff`: set `restore.sql_file` (plain `.sql` or `.sql.gz`) and the freshly-bootstrapped database is replaced by a `pg_dump` from the old system — real users, providers and flows instead of a blank akadmin install. Without `restore.sql_file` the phase records "skipped" and the pipeline runs through untouched.
+
+When enabled it is destructive by definition, so the order is strict and every step gated: locate the **current** Patroni leader via REST `/primary` (it may not be node-1 by now); stop authentik on **all** nodes before touching the database; SFTP the dump to the leader (the base64 push is unusable at dump sizes) and verify sha256 end-to-end; `DROP DATABASE ... WITH (FORCE)` → `CREATE ... OWNER authentik` → `psql -v ON_ERROR_STOP=1` — any error stops the phase with authentik deliberately still down, never half-up on half-data; delete the dump from the node (it contains every secret the IdP holds); then start authentik back bootstrap-style, first node alone with a health gate that covers migrations the server applies on top of the restored schema (a dump from an older tag), then the others one at a time. Verify proves the restored schema has tables, `authentik_core_user` is populated, and every node is healthy and ready. The dump's sha256 and timestamp land in state as the paper trail; at real cutover, re-run with the fresh dump via `--replay restore`.
 
 ### handoff
 

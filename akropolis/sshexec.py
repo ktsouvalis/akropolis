@@ -85,6 +85,18 @@ class NodeConn:
         rc = stdout.channel.recv_exit_status()
         return Result(rc=rc, out=out.strip(), err=err.strip())
 
+    def put(self, local_path: str, remote_path: str, callback=None) -> None:
+        """SFTP upload — for payloads too large for the base64 push_file pipe
+        (SQL dumps). Writes as the SSH user; chmod/chown afterwards via run().
+        `callback(transferred_bytes, total_bytes)` streams progress."""
+        if self._client is None:
+            self.connect()
+        sftp = self._client.open_sftp()  # type: ignore[union-attr]
+        try:
+            sftp.put(local_path, remote_path, callback=callback)
+        finally:
+            sftp.close()
+
 
 class Fleet:
     """All three nodes, connected lazily, iterated in config order."""

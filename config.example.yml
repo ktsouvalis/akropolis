@@ -149,6 +149,22 @@ secrets:
   # except the API token ak-monitor needs.
 
 # ---------------------------------------------------------------------------
+# Restore (optional — the migration/cutover move)
+# ---------------------------------------------------------------------------
+# Load a pg_dump from the old system into the new cluster, replacing the
+# freshly-bootstrapped database. Runs after the authentik phase, before
+# handoff. DESTRUCTIVE when enabled: authentik is stopped on all nodes, the
+# database is dropped WITH (FORCE), the dump is loaded on the CURRENT Patroni
+# leader with ON_ERROR_STOP, then authentik starts back leader-alone-first
+# (health gate covers migrations if the dump is from an older tag).
+# Omit the section (or sql_file) → the phase records "skipped" and moves on.
+# Re-run with a fresher dump at real cutover: akropolis provision ... --replay restore
+# restore:
+#   sql_file: ./dumps/authentik-prod.sql     # .sql or .sql.gz
+#   database: authentik                      # default
+#   timeout: 3600                            # psql budget, seconds
+
+# ---------------------------------------------------------------------------
 # Handoff
 # ---------------------------------------------------------------------------
 monitor:
