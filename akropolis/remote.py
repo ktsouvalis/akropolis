@@ -31,6 +31,26 @@ def push_file(conn: NodeConn, content: str, remote_path: str,
     digest = hashlib.sha256(content.encode()).hexdigest()
     r = conn.run(f"sha256sum {shlex.quote(remote_path)} 2>/dev/null | cut -d' ' -f1")
     if r.ok and r.out == digest:
+        # Content already in place — but still converge mode/owner. An earlier
+        # run (or an earlier akropolis version) may have written this file with
+        # different perms; skipping here would leave that drift in place forever
+        # (e.g. haproxy.cfg pushed as 0600 before v0.7.6 → unreadable by the
+        # container's non-root user).
+        m = conn.run(f"stat -c %a {shlex.quote(remote_path)}")
+        try:
+            mode_drift = m.ok and int(m.out.strip(), 8) != int(mode, 8)
+        except ValueError:
+            mode_drift = False
+        fix = []
+        if mode_drift:
+            fix.append(f"chmod {mode} {shlex.quote(remote_path)}")
+        if owner:
+            fix.append(f"chown {owner} {shlex.quote(remote_path)}")
+        if fix:
+            r2 = conn.run(" && ".join(fix))
+            if not r2.ok:
+                raise RuntimeError(
+                    f"[{conn.node.name}] failed to fix perms on {remote_path}: {r2.err}")
         return False
 
     import base64

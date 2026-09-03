@@ -59,10 +59,18 @@ class HAProxyPhase(Phase):
             r = conn.run("mkdir -p /opt/haproxy/config")
             ctx.record(node, "directories", r.ok, r.err if not r.ok else "")
 
+            # 0644, NOT 0600: haproxy:3.0-alpine drops privileges to the
+            # unprivileged 'haproxy' user (UID 99) before reading the config.
+            # A root-owned 0600 file bind-mounted read-only is unreadable to it
+            # and the container crash-loops with "Permission denied". Matches
+            # the production file mode (root umask default).
             cfg_changed = push_file(conn, hacfg, "/opt/haproxy/config/haproxy.cfg",
-                                    mode="0600")
+                                    mode="0644")
             compose_changed = push_file(conn, compose, "/opt/haproxy/docker-compose.yml")
-            running = conn.run("docker ps --format '{{.Names}}' | grep -qx haproxy").ok
+            # status=running deliberately excludes a crash-looping container
+            # (status 'restarting'), which must take the down && up path.
+            running = conn.run("docker ps --filter status=running "
+                               "--format '{{.Names}}' | grep -qx haproxy").ok
 
             if not running or compose_changed:
                 r = conn.run("cd /opt/haproxy && docker compose down 2>/dev/null; "

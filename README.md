@@ -183,7 +183,9 @@ Guide Step 5. One HAProxy per node as a pure PostgreSQL connection router — Au
 
 The config carries the WAN-hardened settings: `timeout client/server 1h` (long-lived Django LISTEN connections), TCP keepalives both directions, and `on-marked-down shutdown-sessions` so failover kills stale sessions instead of letting them hang. The stats page on `:9000` gets a password generated once and pinned in state.
 
-Reload semantics follow hard-won learnings: a cfg-only change on a running container is a live `docker kill --signal=HUP` (the file push truncates in place, preserving the bind-mount inode); a compose change is `down && up -d`; an unchanged config is an explicit no-op.
+Reload semantics follow hard-won learnings: a cfg-only change on a running container is a live `docker kill --signal=HUP` (the file push truncates in place, preserving the bind-mount inode); a compose change is `down && up -d`; an unchanged config is an explicit no-op. A crash-looping container (`Restarting` status) counts as *not* running and takes the full `down && up -d` path.
+
+The config file is pushed with mode **0644** — not 0600, despite carrying the stats password. The official `haproxy` image drops privileges to the unprivileged `haproxy` user (UID 99) before reading its config, so a root-owned 0600 bind-mount is unreadable inside the container and it crash-loops on "Permission denied". The nodes are single-purpose hosts; on-host readability of the stats password is the accepted trade-off (identical to the production deployment's actual file mode). File pushes also converge mode on every run, so a file left at 0600 by an earlier version is repaired even when its content is unchanged.
 
 Verify, two layers: the stats CSV on **every** node must converge to exactly 1 UP server in `pg_primary_backend` and 2 UP in `pg_replica_backend`; then a real `SELECT 1` as the `authentik` user through `127.0.0.1:5000` proves the whole chain — HAProxy routing, Patroni leader, `pg_hba`, credentials.
 
