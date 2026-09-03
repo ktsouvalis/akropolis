@@ -87,6 +87,24 @@ def run_wizard(output: str | None = None) -> Path:
         tls["import"] = {"fullchain": _ask("path to fullchain.pem"),
                          "privkey": _ask("path to privkey.pem")}
 
+    authentik_extra: dict = {}
+    smtp = input("Configure SMTP email now (password resets, email stages)? [y/N] ").strip().lower()
+    if smtp in ("y", "yes"):
+        email = {
+            "host": _ask("SMTP host"),
+            "port": int(_ask("SMTP port", "587", lambda v: None if v.isdigit() else "must be a number")),
+        }
+        username = input("SMTP username (Enter for none): ").strip()
+        if username:
+            email["username"] = username
+            console.print("[dim]the SMTP password is never written to the config file — "
+                          "the authentik phase prompts for it once and pins it in state[/dim]")
+        enc = _ask_choice("SMTP encryption", ["tls", "ssl", "none"], "tls")
+        email["use_tls"], email["use_ssl"] = enc == "tls", enc == "ssl"
+        email["from"] = _ask("From address", "noreply@" + site)
+        authentik_extra["email"] = email
+    admin_email = input("akadmin bootstrap email (Enter to skip): ").strip()
+
     cfg = {
         "site": {"name": site, "environment": env},
         "provision": {"state_file": f".state/{site}.json", "refuse_existing": True},
@@ -97,7 +115,9 @@ def run_wizard(output: str | None = None) -> Path:
                     "vrrp": {"router_id": 51}, "check_l2_adjacency": True},
         "tls": tls,
         "authentik": {"tag": "2026.5.6",
-                      "bootstrap": {"create_admin": True, "create_api_token": True}},
+                      "bootstrap": {"create_admin": True, "create_api_token": True,
+                                    **({"email": admin_email} if admin_email else {})},
+                      **authentik_extra},
         "secrets": {"source": "prompt"},
         "monitor": {"emit": True, "output": f"./config.{site}.monitor.yml"},
     }

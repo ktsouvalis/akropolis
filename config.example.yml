@@ -125,6 +125,18 @@ authentik:
     create_admin: true            # via AUTHENTIK_BOOTSTRAP_PASSWORD (prompted or generated)
     create_api_token: true        # via AUTHENTIK_BOOTSTRAP_TOKEN → handed to monitor config
   healthcheck: python3-urllib     # curl absent from image ≥2026.5.6 (guide 9.9)
+  # SMTP for password resets / email stages (guide 7.x .env block).
+  # Omit the whole section → the authentik phase asks interactively and pins
+  # the answers in state. `enabled: false` → no email block, no questions.
+  # The SMTP password is NEVER put in this file: prompted once, pinned in state.
+  # email:
+  #   host: ermis.uop.gr
+  #   port: 587
+  #   username: helpdesk          # omit key entirely → prompted; empty → anonymous SMTP
+  #   use_tls: true
+  #   use_ssl: false
+  #   timeout: 10
+  #   from: noreply@uop.gr
 
 # ---------------------------------------------------------------------------
 # Secrets handling

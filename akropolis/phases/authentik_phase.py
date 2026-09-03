@@ -30,6 +30,7 @@ token that the handoff phase gives to the monitor.
 
 from __future__ import annotations
 
+import getpass
 import secrets as pysecrets
 import shlex
 
@@ -58,6 +59,57 @@ class AuthentikPhase(Phase):
     def _acfg(self, ctx: PhaseContext) -> dict:
         return ctx.cfg.raw.get("authentik") or {}
 
+    # ------------------------------------------------------------- email/SMTP
+    # The production .env carries an AUTHENTIK_EMAIL__* block (guide 7.x) —
+    # without it password recovery and email stages silently can't send.
+    # Resolution order per value: site config `authentik.email` → interactive
+    # prompt at apply time, answer pinned in state (so a --replay never
+    # re-asks and renders identically). The SMTP password never lives in the
+    # config file: it is prompted with getpass and pinned in state (0600).
+    def _email(self, ctx: PhaseContext) -> dict | None:
+        ecfg = self._acfg(ctx).get("email")
+        if ecfg is not None and not ecfg.get("enabled", True):
+            return None
+        g = ctx.state.get_or_generate
+        if ecfg is None:
+            want = g("authentik_email_configure",
+                     lambda: input("Configure SMTP email for Authentik "
+                                   "(password resets, email stages)? [y/N] ").strip().lower())
+            if want not in ("y", "yes"):
+                return None
+            ecfg = {}
+
+        def ask(label: str, default: str = "") -> str:
+            suffix = f" [{default}]" if default else ""
+            while True:
+                v = input(f"  SMTP {label}{suffix}: ").strip() or default
+                if v or not default:
+                    return v
+
+        host = ecfg.get("host") or g("authentik_email_host", lambda: ask("host"))
+        port = int(ecfg.get("port") or g("authentik_email_port", lambda: ask("port", "587")))
+        username = ecfg.get("username")
+        if username is None:
+            username = g("authentik_email_username",
+                         lambda: input("  SMTP username (Enter for none): ").strip())
+        password = ""
+        if username:
+            password = (ecfg.get("password")
+                        or g("authentik_email_password",
+                             lambda: getpass.getpass("  SMTP password (hidden, pinned in state): ")))
+        if "use_tls" in ecfg or "use_ssl" in ecfg:
+            use_tls = bool(ecfg.get("use_tls", False))
+            use_ssl = bool(ecfg.get("use_ssl", False))
+        else:
+            enc = g("authentik_email_encryption",
+                    lambda: ask("encryption (tls/ssl/none)", "tls"))
+            use_tls, use_ssl = enc == "tls", enc == "ssl"
+        from_addr = ecfg.get("from") or g("authentik_email_from",
+                                          lambda: ask("From address", f"noreply@{ctx.cfg.tls.hostname or 'example.org'}"))
+        return {"host": host, "port": port, "username": username,
+                "password": password, "use_tls": use_tls, "use_ssl": use_ssl,
+                "timeout": int(ecfg.get("timeout", 10)), "from_addr": from_addr}
+
     def _wait_healthy(self, conn, timeout: float) -> bool:
         # both containers must report exactly 'healthy'
         return wait_for(conn, f"{HEALTHY} | grep -v healthy | wc -l",
@@ -76,6 +128,17 @@ class AuthentikPhase(Phase):
             "AUTHENTIK_SECRET_KEY / bootstrap admin password / bootstrap API token: "
             "generated once, pinned in state, identical everywhere, never printed",
         ]
+        ecfg = self._acfg(ctx).get("email")
+        if ecfg is not None and not ecfg.get("enabled", True):
+            lines.append("SMTP email: disabled in site config — no AUTHENTIK_EMAIL__* block")
+        elif ecfg is not None:
+            lines.append(f"SMTP email: from site config (host {ecfg.get('host', '?')}) — "
+                         "missing values (incl. password) prompted once and pinned in state")
+        elif "authentik_email_configure" in ctx.state.data["generated"]:
+            lines.append("SMTP email: previous interactive answers pinned in state will be reused")
+        else:
+            lines.append("SMTP email: not in site config — you will be asked interactively "
+                         "(answers pinned in state, password via hidden prompt)")
         if running:
             lines.append("cluster already running → ROLLING apply, node-3 → node-2 → node-1, "
                          "down && up -d, health-gated between nodes")
@@ -100,6 +163,7 @@ class AuthentikPhase(Phase):
         cfg = ctx.cfg
         sec = self._secrets(ctx)
         acfg = self._acfg(ctx)
+        email = self._email(ctx)  # may prompt — resolved before any node is touched
         rolling = self._all_running(ctx)
 
         env = render("authentik-env.j2",
@@ -108,7 +172,8 @@ class AuthentikPhase(Phase):
                      secret_key=sec["secret_key"],
                      bootstrap_password=sec["bootstrap_password"],
                      bootstrap_token=sec["bootstrap_token"],
-                     bootstrap_email=acfg.get("bootstrap", {}).get("email", ""))
+                     bootstrap_email=acfg.get("bootstrap", {}).get("email", ""),
+                     email=email)
         compose = render("authentik-compose.yml.j2",
                          extra_server_volumes=list(acfg.get("extra_server_volumes", []) or []),
                          extra_worker_volumes=list(acfg.get("extra_worker_volumes", []) or []))
