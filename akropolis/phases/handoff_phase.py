@@ -66,7 +66,13 @@ class HandoffPhase(Phase):
             interface=cfg.network.interface,
             nodes=cfg.nodes,
             ssh_user=cfg.ssh.user,
-            ssh_key_file=cfg.ssh.key_file or "~/.ssh/id_ed25519",
+            # Never guess a key path: with ssh.auth 'agent' there is no
+            # key_file in the site config, and the monitor tool reads the key
+            # from its own config — a wrong guess silently breaks its SSH
+            # checks (keepalived state, service logs). Emit a placeholder and
+            # tell the operator on the landing card.
+            ssh_key_file=cfg.ssh.key_file
+            or "CHANGE_ME  # path to the private key the monitor should use",
             authentik_url=self._url(ctx),
             haproxy_stats_pass=gen.get("haproxy_stats_password", ""),
             api_token=gen.get("authentik_bootstrap_token", ""),
@@ -86,6 +92,11 @@ class HandoffPhase(Phase):
         console.print(f"  password  : [bold]{gen.get('authentik_bootstrap_password', '?')}[/bold] "
                       "[yellow](shown once — change it after first login)[/yellow]")
         console.print(f"  monitor   : run your monitoring tool with [bold]{out}[/bold]")
+        if not cfg.ssh.key_file:
+            console.print("  [yellow]NOTE: ssh.key_file was not set in the site config — "
+                          f"edit [bold]{out}[/bold] and replace the CHANGE_ME placeholder "
+                          "under 'ssh:' with the private key path the monitor should "
+                          "use, or its SSH-based checks will fail.[/yellow]")
         if gen.get("tls_acme_pending"):
             console.print("  [yellow]NOTE: ACME issuance is still pending — the cluster is "
                           "serving the placeholder cert.[/yellow]")
