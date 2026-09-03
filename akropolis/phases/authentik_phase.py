@@ -33,8 +33,9 @@ from __future__ import annotations
 import getpass
 import secrets as pysecrets
 import shlex
+from pathlib import Path
 
-from ..remote import push_file, render, wait_for
+from ..remote import push_binary, push_file, render, wait_for
 from .base import Phase, PhaseContext, console
 
 HEALTHY = ("docker inspect -f '{{.State.Health.Status}}' authentik-server-1 "
@@ -106,6 +107,37 @@ class AuthentikPhase(Phase):
             "bootstrap_token": g("authentik_bootstrap_token",
                                  lambda: pysecrets.token_urlsafe(45)),
         }
+
+    # ----------------------------------------------------------- branding
+    # Custom logo/background are two moving parts, not one: the files must
+    # exist ON EVERY NODE, and the container needs a bind-mount over the
+    # asset path it actually serves. Doing only the second (an
+    # extra_server_volumes entry) mounts a directory over a missing file and
+    # breaks the asset. So akropolis uploads from the workstation and derives
+    # the mounts, keeping the two in sync by construction.
+    #
+    # Asset paths mirror the production compose:
+    #   /web/dist/assets/icons/<name>   ← logo
+    #   /web/dist/assets/images/<name>  ← background
+    def _branding_volumes(self, ctx: PhaseContext) -> list[str]:
+        b = self._acfg(ctx).get("branding") or {}
+        pairs = [("logo", "icons"), ("background", "images")]
+        vols: list[str] = []
+        for key, subdir in pairs:
+            src = str(b.get(key) or "").strip()
+            if not src:
+                continue
+            local = Path(src).expanduser()
+            if not local.exists():
+                raise RuntimeError(f"authentik.branding.{key} does not exist: {local}")
+            name = local.name
+            remote = f"/opt/authentik/branding/{subdir}/{name}"
+            for conn in ctx.fleet:
+                changed = push_binary(conn, local, remote)
+                ctx.record(conn.node.name, f"branding {key}", True,
+                           f"{name} → {remote}" + ("" if changed else " (unchanged)"))
+            vols.append(f"{remote}:/web/dist/assets/{subdir}/{name}")
+        return vols
 
     def _acfg(self, ctx: PhaseContext) -> dict:
         return ctx.cfg.raw.get("authentik") or {}
@@ -191,6 +223,12 @@ class AuthentikPhase(Phase):
             lines.append(f"BOOTSTRAP: start {leader} ALONE, gate on healthy "
                          "(covers image pull + database migrations, up to 15 min), "
                          "then the other nodes one at a time")
+        b = self._acfg(ctx).get("branding") or {}
+        named = [k for k in ("logo", "background") if b.get(k)]
+        if named:
+            lines.append(f"branding: upload {', '.join(named)} to every node under "
+                         "/opt/authentik/branding/ and bind-mount over "
+                         "/web/dist/assets/{icons,images}/")
         lines.append("verify: server+worker healthy on all nodes, /-/health/ready/ 200 "
                      "per node, API answers with the bootstrap token")
         return lines
@@ -219,8 +257,12 @@ class AuthentikPhase(Phase):
                      bootstrap_token=sec["bootstrap_token"],
                      bootstrap_email=acfg.get("bootstrap", {}).get("email", ""),
                      email=email)
+        # uploads happen before the compose file is rendered, so the mounts
+        # in it always refer to files that are already on the node
+        branding = self._branding_volumes(ctx)
         compose = render("authentik-compose.yml.j2",
-                         extra_server_volumes=list(acfg.get("extra_server_volumes", []) or []),
+                         extra_server_volumes=branding
+                         + list(acfg.get("extra_server_volumes", []) or []),
                          extra_worker_volumes=list(acfg.get("extra_worker_volumes", []) or []))
 
         changed: dict[str, bool] = {}

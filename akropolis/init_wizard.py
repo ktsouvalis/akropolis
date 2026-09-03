@@ -104,6 +104,20 @@ def run_wizard(output: str | None = None) -> Path:
         email["from"] = _ask("From address", "noreply@" + site)
         authentik_extra["email"] = email
     admin_email = input("akadmin bootstrap email (Enter to skip): ").strip()
+
+    # Branding files live on the WORKSTATION; akropolis uploads them to every
+    # node and derives the bind-mounts, so the operator never has to keep a
+    # volume list and a set of copied files in sync by hand.
+    branding = {}
+    for key, label in (("logo", "logo (png)"), ("background", "background image")):
+        path = input(f"path to custom {label} on this machine (Enter to skip): ").strip()
+        if path:
+            if not Path(path).expanduser().exists():
+                console.print(f"[yellow]{path} not found — skipping[/yellow]")
+                continue
+            branding[key] = path
+    if branding:
+        authentik_extra["branding"] = branding
     monitor_ip = _ask("monitoring host IP (allowed through UFW to Patroni/etcd/HAProxy/"
                       "Authentik ports; Enter to skip)", default="-",
                       validate=lambda v: None if v == "-" else _valid_ip(v))

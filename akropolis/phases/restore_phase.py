@@ -421,6 +421,25 @@ GRANT ALL ON SCHEMA public TO {owner};
         ctx.record(leader.node.name, "verify: all public tables owned by the app role",
                    stray == 0, f"{stray} owned by another role" if stray else "")
 
+        # The restore replaced the database the bootstrap API token lived in.
+        # That token is what the monitor authenticates with, so it is almost
+        # certainly dead now — and the failure surfaces far away, as an
+        # "unauthorized" panel in the dashboard hours later. Say it here.
+        token = ctx.state.data["generated"].get("authentik_bootstrap_token", "")
+        if token:
+            r = ctx.fleet.conns[0].run(
+                f"curl -sk -H {shlex.quote('Authorization: Bearer ' + token)} "
+                "-o /dev/null -w '%{http_code}' "
+                "https://127.0.0.1:9443/api/v3/admin/version/", timeout=30)
+            tok_ok = r.out.strip() == "200"
+            ctx.record("cluster", "bootstrap API token still valid", tok_ok,
+                       f"HTTP {r.out}" if tok_ok else
+                       f"HTTP {r.out} — the restored database does not contain this "
+                       "token. Create a new one (akadmin > Directory > Tokens, admin "
+                       "scope) and put it in the monitor config, or its Workers and "
+                       "Worker Queue panels will read 'unauthorized'",
+                       warn=not tok_ok)
+
         ok = tables > 0 and users > 0 and writable and stray == 0
         for conn in ctx.fleet:
             node = conn.node.name

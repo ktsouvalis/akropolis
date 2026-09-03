@@ -67,6 +67,34 @@ def push_file(conn: NodeConn, content: str, remote_path: str,
     return True
 
 
+def push_binary(conn: NodeConn, local_path, remote_path: str,
+                mode: str = "0644") -> bool:
+    """Upload a LOCAL BINARY file (images, certs) to `remote_path` over SFTP.
+
+    push_file() base64-encodes a str through the shell, which is fine for
+    configs but wrong for binaries and wasteful for anything large. Returns
+    True if the remote file changed; unchanged files are a detected no-op so
+    re-runs don't churn the compose stack.
+    """
+    import hashlib as _h
+    from pathlib import Path as _P
+
+    local = _P(local_path).expanduser()
+    digest = _h.sha256(local.read_bytes()).hexdigest()
+    r = conn.run(f"sha256sum {shlex.quote(remote_path)} 2>/dev/null | cut -d' ' -f1")
+    if r.ok and r.out.strip() == digest:
+        return False
+    dirpath = remote_path.rsplit("/", 1)[0]
+    r = conn.run(f"mkdir -p {shlex.quote(dirpath)}")
+    if not r.ok:
+        raise RuntimeError(f"[{conn.node.name}] mkdir {dirpath}: {r.err}")
+    conn.put(str(local), remote_path)
+    r = conn.run(f"chmod {mode} {shlex.quote(remote_path)}")
+    if not r.ok:
+        raise RuntimeError(f"[{conn.node.name}] chmod {remote_path}: {r.err}")
+    return True
+
+
 def wait_for(conn: NodeConn, cmd: str, expect: str | None = None,
              timeout: float = 120.0, interval: float = 5.0,
              label: str = "", tick=None) -> bool:

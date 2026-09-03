@@ -46,6 +46,15 @@ class NginxKeepalivedPhase(Phase):
     def _check_port(self, ctx: PhaseContext) -> int:
         return 443 if self._tls_enabled(ctx) else 80
 
+    def _stub_allow(self, ctx: PhaseContext) -> list[str]:
+        cfg = ctx.cfg
+        allow = list((cfg.raw.get("network") or {}).get("stub_status_allow", []) or [])
+        mon = str(((cfg.raw.get("monitor") or {}).get("ip") or "")).strip() \
+            or ctx.state.data["generated"].get("monitor_ip", "")
+        if mon and mon not in allow:
+            allow.append(mon)
+        return allow
+
     def _subnet(self, ctx: PhaseContext) -> str:
         ip = ctx.cfg.nodes[0].ip
         return ".".join(ip.split(".")[:3]) + ".0/24"
@@ -115,8 +124,10 @@ class NginxKeepalivedPhase(Phase):
                           hostname=cfg.tls.hostname or "_",
                           tls_enabled=self._tls_enabled(ctx),
                           nodes_subnet=self._subnet(ctx),
-                          stub_status_allow=list(
-                              (cfg.raw.get("network") or {}).get("stub_status_allow", []) or []),
+                          # The monitor host is not on the node subnet, so
+                          # without this its nginx panel is 403 — the same
+                          # reason it needs the UFW opening in the base phase.
+                          stub_status_allow=self._stub_allow(ctx),
                           trusted_proxies=list(
                               (cfg.raw.get("network") or {}).get("trusted_proxies", []) or []))
             conf_changed = push_file(conn, conf, "/opt/nginx/conf/nginx.conf")

@@ -227,3 +227,25 @@ now fixed:
   dead, so `/-/health/live/` on the worker said nothing useful (already known
   for the server; equally true here). Container health, not the endpoint, is
   the signal — and container health must be compared exactly (see v0.10.5).
+
+
+## Restore invalidates the bootstrap API token (Sep 2026)
+
+Obvious in hindsight: the authentik phase proves the bootstrap token against
+the live API, then the restore phase replaces the entire database with a dump
+from another system. The token the monitor was handed at handoff no longer
+exists, and the failure surfaces far from its cause — as "unauthorized" in
+the dashboard's Workers panels, long after the restore reported success.
+
+The restore phase now checks the token after bringing authentik back and, if
+it is dead, says exactly what to do (new token in akadmin > Directory >
+Tokens, admin scope, into the monitor config) as a warning rather than a
+failure — the cluster itself is healthy.
+
+## Monitor host blocked by the stub_status ACL (Sep 2026)
+
+The nginx panel read UNREACHABLE for every node while nginx was fine: the
+stub_status server on :8080 allows loopback and the node subnet only, and the
+monitor runs from a workstation outside it, so nginx answered 403. monitor.ip
+is now added to `stub_status_allow` automatically — the same host that gets
+the UFW opening in the base phase.
