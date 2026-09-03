@@ -195,3 +195,35 @@ Second fix in the same version: the server is now started with
 the freshly-gated worker (health resets to "starting") and then waits on it
 with compose's own ~150s clock — reintroducing the exact failure the phase
 exists to avoid.
+
+
+## Restored objects owned by postgres, not the app role (Sep 2026, ESDA Lab)
+
+The worker crash-looped after a successful restore:
+
+    psycopg.errors.InsufficientPrivilege:
+    permission denied for table authentik_install_id
+
+Cause: the phase creates the database `OWNER authentik` but loads the dump as
+the postgres SUPERUSER (extensions and some dump statements need it). Every
+object the dump creates *without* an explicit `OWNER TO` therefore belongs to
+postgres. The app role can read through its grants but cannot write, so the
+worker dies on the `install_id` system migration and `restart: unless-stopped`
+loops it roughly every 6 seconds.
+
+Dumps taken with `--no-owner`, or from a source whose role was named
+differently, hit this every time. Loading as the app role instead is not a
+general fix (extensions require superuser), so ownership is now re-applied
+explicitly after the load and proven afterwards (v0.10.6). Reproduced and
+verified against a real PostgreSQL 16.
+
+Two things made this much harder to diagnose than it should have been, both
+now fixed:
+
+- **verify passed.** It counted tables and users — reads only. The app's first
+  action is a WRITE. Verify now does a real write as the app role and asserts
+  no public table is owned by anyone else.
+- **the liveness endpoint kept answering 200** while the Python process was
+  dead, so `/-/health/live/` on the worker said nothing useful (already known
+  for the server; equally true here). Container health, not the endpoint, is
+  the signal — and container health must be compared exactly (see v0.10.5).

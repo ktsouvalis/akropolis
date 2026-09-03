@@ -25,8 +25,13 @@ every step is gated:
   5. DROP DATABASE ... WITH (FORCE) + CREATE ... OWNER authentik, then
      `psql -v ON_ERROR_STOP=1` the dump in — any error stops the phase with
      authentik still down, never half-up on half-data
-  6. delete the dump from the node (it contains every secret the IdP holds)
-  7. start the WORKER alone (`up -d --no-deps`) and gate on it with our own
+  6. normalise ownership: psql runs as the postgres SUPERUSER, so anything
+     the dump creates without an explicit `OWNER TO` is owned by postgres and
+     the app role cannot write — the worker then dies on its first system
+     migration ("permission denied for table authentik_install_id") and
+     crash-loops behind a liveness endpoint that still answers 200
+  7. delete the dump from the node (it contains every secret the IdP holds)
+  8. start the WORKER alone (`up -d --no-deps`) and gate on it with our own
      budget: migrating real restored data outlasts compose's dependency wait
      (~150s), which would abort the whole `up` mid-migration. The server
      follows once the worker is healthy, then the other nodes one at a time
@@ -68,6 +73,13 @@ class RestorePhase(Phase):
             raise RuntimeError(f"restore.database {db!r}: only [a-z0-9_] names are "
                                "accepted (it is interpolated into SQL)")
         return db
+
+    def _owner(self, ctx: PhaseContext) -> str:
+        owner = str(self._rcfg(ctx).get("owner") or "authentik")
+        if not re.fullmatch(r"[a-z_][a-z0-9_]*", owner):
+            raise RuntimeError(f"restore.owner {owner!r}: only [a-z0-9_] names are "
+                               "accepted (it is interpolated into SQL)")
+        return owner
 
     def _find_leader(self, ctx: PhaseContext):
         for conn in ctx.fleet:
@@ -137,6 +149,9 @@ class RestorePhase(Phase):
             f"DROP DATABASE {db} WITH (FORCE) → CREATE OWNER authentik → "
             "psql -v ON_ERROR_STOP=1 the dump (any error stops with authentik down, "
             "never half-up on half-data)",
+            f"re-own every public object to '{self._owner(ctx)}' after the load "
+            "(psql runs as superuser; dumps without OWNER TO would leave the app "
+            "role unable to write, crash-looping the worker) and prove none are left",
             "delete the dump from the node (it contains every secret the IdP holds)",
             "start the WORKER alone first and gate on OUR budget "
             "(restore.migration_timeout, default 3600s): migrating restored data "
@@ -156,6 +171,7 @@ class RestorePhase(Phase):
         if not local.exists():
             raise RuntimeError(f"restore.sql_file does not exist: {local}")
         db = self._database(ctx)
+        owner = self._owner(ctx)
         timeout = int(self._rcfg(ctx).get("timeout", 3600))
         gz = local.suffix == ".gz"
 
@@ -220,10 +236,10 @@ class RestorePhase(Phase):
         # --- 4. drop, create, load -------------------------------------------
         ctx.begin(lname, f"drop + recreate database '{db}'")
         r = leader.run(f"{PSQL} -c {shlex.quote(f'DROP DATABASE IF EXISTS {db} WITH (FORCE)')} "
-                       f"-c {shlex.quote(f'CREATE DATABASE {db} OWNER authentik')}",
+                       f"-c {shlex.quote(f'CREATE DATABASE {db} OWNER {owner}')}",
                        timeout=120)
         ctx.record(lname, f"database '{db}' dropped + recreated", r.ok,
-                   r.err if not r.ok else "owner authentik")
+                   r.err if not r.ok else f"owner {owner}")
         if not r.ok:
             raise RuntimeError("drop/create failed — authentik is still down; "
                                "inspect, then --replay restore")
@@ -246,6 +262,51 @@ class RestorePhase(Phase):
                                "(never half-up on half-data); fix the dump and "
                                "--replay restore")
         ctx.record(lname, "dump removed from node", True, "")
+
+        # --- 5b. ownership normalisation --------------------------------------
+        # The dump is loaded by the postgres SUPERUSER (extensions and some
+        # dump statements require it), so every object the dump creates
+        # WITHOUT an explicit `OWNER TO` ends up owned by postgres. The
+        # authentik role can then read through its grants but cannot write:
+        # the worker dies on its first system migration with
+        # "permission denied for table authentik_install_id" and crash-loops
+        # behind a liveness endpoint that still answers 200.
+        #
+        # Dumps taken with --no-owner, or from a source whose role had a
+        # different name, hit this every time. Ownership is therefore made
+        # explicit here rather than trusted to the dump. Idempotent: objects
+        # already owned by authentik are simply re-assigned to themselves.
+        ctx.begin(lname, "normalising object ownership", f"→ {owner}")
+        own_sql = f"""
+DO $$ DECLARE r record; BEGIN
+  FOR r IN SELECT tablename AS n FROM pg_tables WHERE schemaname='public' LOOP
+    EXECUTE format('ALTER TABLE public.%I OWNER TO {owner}', r.n); END LOOP;
+  FOR r IN SELECT sequencename AS n FROM pg_sequences WHERE schemaname='public' LOOP
+    EXECUTE format('ALTER SEQUENCE public.%I OWNER TO {owner}', r.n); END LOOP;
+  FOR r IN SELECT viewname AS n FROM pg_views WHERE schemaname='public' LOOP
+    EXECUTE format('ALTER VIEW public.%I OWNER TO {owner}', r.n); END LOOP;
+  FOR r IN SELECT matviewname AS n FROM pg_matviews WHERE schemaname='public' LOOP
+    EXECUTE format('ALTER MATERIALIZED VIEW public.%I OWNER TO {owner}', r.n); END LOOP;
+END $$;
+GRANT ALL ON SCHEMA public TO {owner};
+"""
+        r = leader.run(f"{PSQL} -q -d {db} -c {shlex.quote(own_sql)}", timeout=600)
+        ctx.record(lname, f"objects owned by '{owner}'", r.ok,
+                   (r.err.splitlines()[-1] if r.err else "") if not r.ok else "")
+        if not r.ok:
+            raise RuntimeError("could not normalise ownership — the app role would "
+                               "not be able to write; authentik left DOWN")
+
+        # prove it, rather than assume the DO block covered everything
+        r = leader.run(f"{PSQL} -tA -d {db} -c " + shlex.quote(
+            f"SELECT count(*) FROM pg_tables WHERE schemaname='public' "
+            f"AND tableowner<>'{owner}'"), timeout=60)
+        stray = int(r.out.strip() or -1)
+        ctx.record(lname, "no tables left owned by another role", stray == 0,
+                   f"{stray} stray" if stray else "all public tables owned correctly")
+        if stray != 0:
+            raise RuntimeError(f"{stray} tables are still not owned by '{owner}' — "
+                               "the worker would crash-loop on its first migration")
 
         ctx.state.data["generated"]["restore_last"] = {
             "file": str(local), "sha256": digest, "database": db,
@@ -341,7 +402,26 @@ class RestorePhase(Phase):
         ctx.record(leader.node.name, "verify: authentik_core_user populated",
                    users > 0, f"{users} users" if users >= 0 else "table missing")
 
-        ok = tables > 0 and users > 0
+        # Reading proves nothing about the app's ability to RUN: the worker
+        # writes on its very first system migration. A restore that verified
+        # green while the app role could not write is what sent an operator
+        # chasing a crash-loop, so the write is exercised here, as that role.
+        owner = self._owner(ctx)
+        r = leader.run(f"{PSQL} -q -d {db} -c " + shlex.quote(
+            f"SET ROLE {owner}; CREATE TEMP TABLE akropolis_write_probe (x int); "
+            "INSERT INTO akropolis_write_probe VALUES (1)"), timeout=60)
+        writable = r.ok
+        ctx.record(leader.node.name, f"verify: role '{owner}' can write", writable,
+                   "" if writable else (r.err.splitlines()[-1] if r.err else "denied"))
+
+        r = leader.run(f"{PSQL} -tA -d {db} -c " + shlex.quote(
+            f"SELECT count(*) FROM pg_tables WHERE schemaname='public' "
+            f"AND tableowner<>'{owner}'"), timeout=60)
+        stray = int(r.out.strip() or -1)
+        ctx.record(leader.node.name, "verify: all public tables owned by the app role",
+                   stray == 0, f"{stray} owned by another role" if stray else "")
+
+        ok = tables > 0 and users > 0 and writable and stray == 0
         for conn in ctx.fleet:
             node = conn.node.name
             good = wait_healthy(ctx, conn, timeout=60, label="verify: healthy gate")
