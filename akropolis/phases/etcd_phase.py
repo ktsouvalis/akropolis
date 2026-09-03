@@ -47,7 +47,7 @@ class EtcdPhase(Phase):
                              node=conn.node, nodes=cfg.nodes,
                              cluster_token=token, cluster_state="new")
             changed = push_file(conn, content, "/opt/etcd/docker-compose.yml")
-            running = conn.run("docker ps --format '{{.Names}}' | grep -qx etcd").ok
+            running = conn.run("docker ps --filter status=running --format '{{.Names}}' | grep -qx etcd").ok
             if changed and running:
                 r = conn.run("cd /opt/etcd && docker compose down && docker compose up -d",
                              timeout=300)

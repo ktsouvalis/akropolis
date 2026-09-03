@@ -121,7 +121,7 @@ class NginxKeepalivedPhase(Phase):
                               (cfg.raw.get("network") or {}).get("trusted_proxies", []) or []))
             conf_changed = push_file(conn, conf, "/opt/nginx/conf/nginx.conf")
             compose_changed = push_file(conn, compose, "/opt/nginx/docker-compose.yml")
-            running = conn.run("docker ps --format '{{.Names}}' | grep -qx nginx").ok
+            running = conn.run("docker ps --filter status=running --format '{{.Names}}' | grep -qx nginx").ok
 
             if not running or conf_changed or compose_changed:
                 # conf changes also get down && up: single-file bind-mount inode trap

@@ -90,7 +90,7 @@ class AuthentikPhase(Phase):
     def _all_running(self, ctx: PhaseContext) -> bool:
         try:
             return all(
-                conn.run("docker ps --format '{{.Names}}' | grep -q authentik-server").ok
+                conn.run("docker ps --filter status=running --format '{{.Names}}' | grep -q authentik-server").ok
                 for conn in ctx.fleet)
         except Exception:  # noqa: BLE001
             return False

@@ -47,6 +47,10 @@ http {
         server_name _;
         location /nginx_status {
             stub_status;
+            # loopback allowed so on-node health checks (verify, ops curl)
+            # aren't 403'd by the subnet ACL — source IP for a local curl
+            # under network_mode: host is 127.0.0.1, not a subnet address.
+            allow 127.0.0.1;
             allow {{ nodes_subnet }};
 {% for cidr in stub_status_allow %}
             allow {{ cidr }};
