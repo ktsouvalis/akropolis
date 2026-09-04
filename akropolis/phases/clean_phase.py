@@ -4,16 +4,29 @@ The inverse of the pipeline, for test iteration: run it, and `provision`
 starts from a genuinely blank slate (preflight's refuse_existing passes,
 secrets are re-generated, nothing left over can mask a bug).
 
-Teardown runs in REVERSE build order — the same discipline as building, for
-the same reason: the VIP goes first so nothing routes traffic at a cluster
-being dismantled, and the database goes down before its DCS.
+Topology-aware (see STEPS/STEPS_SINGLE below) — invoked as its own
+subcommand, not part of either provisioning pipeline, so it reads
+`ctx.cfg.topology` directly rather than going through cli.py's
+`pipeline_for`.
+
+HA teardown runs in REVERSE build order — the same discipline as building,
+for the same reason: the VIP goes first so nothing routes traffic at a
+cluster being dismantled, and the database goes down before its DCS.
 
   keepalived (VIP) → nginx → authentik → haproxy → patroni/PostgreSQL data
   → etcd → TLS material (letsencrypt, webroot, certbot dist key) → UFW reset
   (ssh re-allowed BEFORE re-enable — same rule as building) → /etc/hosts block
   → restore-dump leftovers in /tmp
 
-What it deliberately does NOT touch:
+single-node has far less to remove: authentik + its containerized postgres
+share one compose project (`docker compose down -v` also drops the named
+postgres volume), there's no keepalived/haproxy/patroni/etcd to have ever
+existed, and `/etc/letsencrypt` covers both the HA cluster's certbot
+distribution key AND single-node's own renewal deploy hook, so it needed no
+new step — just a shorter STEPS list so an operator doesn't see a confusing
+"keepalived down" checkmark on a host that never had it.
+
+What it deliberately does NOT touch, either topology:
   - packages (docker, postgresql-16, keepalived, certbot, chrony...) — apt
     state belongs to the operator's patching policy; removing data and config
     is what makes the next provision run honest
@@ -73,6 +86,26 @@ STEPS: list[tuple[str, str]] = [
      "rm -f /tmp/akropolis-restore-*.sql /tmp/akropolis-restore-*.sql.gz"),
 ]
 
+# single-node: one compose project (authentik + its containerized postgres,
+# `down -v` drops the named postgres volume too), no keepalived/haproxy/
+# patroni/etcd ever existed, /etc/letsencrypt covers the renewal deploy hook
+# (see authentik_certs_phase.py) the same way it covers the HA cluster's
+# certbot key — no extra step needed for it.
+STEPS_SINGLE: list[tuple[str, str]] = [
+    ("authentik + postgres down + removed (incl. named volume)",
+     "cd /opt/authentik 2>/dev/null && docker compose down -v 2>/dev/null; "
+     "rm -rf /opt/authentik; true"),
+    ("TLS material removed",
+     "rm -rf /etc/letsencrypt /var/www/certbot; true"),
+    ("ufw reset (ssh re-allowed, left enabled)",
+     "ufw --force reset && ufw default deny incoming && "
+     "ufw default allow outgoing && ufw allow ssh && ufw --force enable"),
+    ("/etc/hosts akropolis block removed",
+     "sed -i '/# BEGIN akropolis/,/# END akropolis/d' /etc/hosts"),
+    ("restore-dump leftovers removed",
+     "rm -f /tmp/akropolis-restore-*.sql /tmp/akropolis-restore-*.sql.gz"),
+]
+
 # Nothing akropolis-made may survive. Absence of each is verified per node.
 GONE = [
     ("/opt/authentik", "test ! -e /opt/authentik"),
@@ -89,31 +122,48 @@ GONE = [
      "--filter name='authentik|nginx|haproxy|etcd')\""),
 ]
 
+GONE_SINGLE = [
+    ("/opt/authentik", "test ! -e /opt/authentik"),
+    ("no ak containers",
+     "test -z \"$(docker ps -aq 2>/dev/null --filter name='authentik')\""),
+]
+
 
 class CleanPhase(Phase):
     name = "clean"
 
     def plan(self, ctx: PhaseContext) -> list[str]:
         cfg = ctx.cfg
-        return [
+        lines = [
             f"[red]DESTRUCTIVE[/red]: tear site [bold]{cfg.name}[/bold] "
             f"({', '.join(n.name for n in cfg.nodes)}) down to bare VMs",
-            "reverse build order: keepalived/VIP → nginx → authentik → haproxy → "
-            "patroni + ALL postgres data → etcd + data → TLS material → UFW reset "
-            "(ssh kept) → /etc/hosts block → /tmp dump leftovers",
-            "packages (docker, postgresql-16, keepalived, certbot) and the hostname "
-            "are left alone — data and config removal is what makes the next "
-            "provision honest",
-            "the VIP is released with the first step — anything still pointing at "
-            f"{cfg.network.vip} goes dark immediately",
-            f"local state archived to {ctx.cfg.state_file}.cleaned-<ts> then removed "
-            "→ next provision regenerates every secret from scratch",
         ]
+        if cfg.topology == "ha":
+            lines.append(
+                "reverse build order: keepalived/VIP → nginx → authentik → haproxy → "
+                "patroni + ALL postgres data → etcd + data → TLS material → UFW reset "
+                "(ssh kept) → /etc/hosts block → /tmp dump leftovers")
+        else:
+            lines.append(
+                "authentik + its containerized postgres (one compose project, "
+                "docker compose down -v drops the named volume too) → TLS material "
+                "→ UFW reset (ssh kept) → /etc/hosts block → /tmp dump leftovers")
+        lines.append(
+            "packages (docker, postgresql-16" + (", keepalived, certbot" if cfg.topology == "ha"
+            else ", certbot") + ") and the hostname are left alone — data and config "
+            "removal is what makes the next provision honest")
+        if cfg.topology == "ha":
+            lines.append("the VIP is released with the first step — anything still "
+                         f"pointing at {cfg.network.vip} goes dark immediately")
+        lines.append(f"local state archived to {ctx.cfg.state_file}.cleaned-<ts> then "
+                     "removed → next provision regenerates every secret from scratch")
+        return lines
 
     def apply(self, ctx: PhaseContext) -> None:
+        steps = STEPS if ctx.cfg.topology == "ha" else STEPS_SINGLE
         for conn in ctx.fleet:
             node = conn.node.name
-            for label, cmd in STEPS:
+            for label, cmd in steps:
                 ctx.begin(node, label)
                 r = conn.run(cmd, timeout=300)
                 ctx.record(node, label, r.ok, r.err if not r.ok else "")
@@ -136,10 +186,11 @@ class CleanPhase(Phase):
             ctx.record("workstation", "state file", True, "already absent")
 
     def verify(self, ctx: PhaseContext) -> bool:
+        gone = GONE if ctx.cfg.topology == "ha" else GONE_SINGLE
         ok = True
         for conn in ctx.fleet:
             node = conn.node.name
-            for label, cmd in GONE:
+            for label, cmd in gone:
                 r = conn.run(cmd, timeout=30)
                 ctx.record(node, f"verify gone: {label}", r.ok,
                            "" if r.ok else "still present")
@@ -148,3 +199,4 @@ class CleanPhase(Phase):
             console.print("[green]nodes are bare — `akropolis provision` starts "
                           "from scratch (all secrets regenerated).[/green]")
         return ok
+

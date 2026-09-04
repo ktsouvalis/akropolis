@@ -39,9 +39,9 @@ No Redis: Authentik ≥ 2025.10 keeps sessions, cache, tasks, and WebSocket stat
 | restore | ✅ implemented (optional — skipped unless `restore.sql_file` is set) |
 | handoff | ✅ implemented, tested (emits the real ak-monitor schema) |
 | `akropolis monitor` | 🚧 stub (will fold in ak-monitor) |
-| `site.topology: single` | 🚧 in progress — preflight, base, authentik (postgres-in-container), certs (authentik's own Web Certificate, no nginx), handoff done; restore, clean next |
+| `site.topology: single` | ✅ implemented — preflight, base, authentik (postgres-in-container), certs (authentik's own Web Certificate, no nginx), restore, handoff, clean. Not yet run against a real VM. |
 
-**The 3-node HA provisioning pipeline is complete** — every phase from preflight to handoff is implemented. First full run against real VMs is the remaining milestone. A single-node topology (no VIP, PostgreSQL as a plain container, intended as a production-fallback instance) is being scaffolded alongside it — see `site.topology` in the configuration reference.
+**The 3-node HA provisioning pipeline is complete** — every phase from preflight to handoff is implemented. First full run against real VMs is the remaining milestone. A single-node topology (no VIP, PostgreSQL as a plain container, intended as a production-fallback instance) is also feature-complete — preflight through clean — and likewise awaits a first real run; see `site.topology` in the configuration reference and the dedicated section below.
 
 ## Install
 
@@ -319,15 +319,29 @@ Either way the cert lands in authentik's discovery folder, the worker is
 restarted so discovery runs immediately, and the default brand's Web
 Certificate is set to the result.
 
-Still missing: a single-node `restore` and a single-node-aware `clean`.
-`handoff` is done — same job as the HA version (emit the monitor config,
-print the landing card), much smaller by construction: no VIP, no
-keepalived priorities, no HAProxy/postgres credentials to hand out
-(PostgreSQL never leaves the loopback interface, so a remote monitor
-couldn't use those credentials anyway). The admin URL falls back to the
-node's own IP when `tls.hostname` isn't set — single-node has no VIP for
-`ha`'s `tls: none` to fall back to, and authentik always answers HTTPS
-here regardless of provider, so an empty URL was the alternative.
+`handoff` is the same job as the HA version — emit the monitor config, print
+the landing card — much smaller by construction: no VIP, no keepalived
+priorities, no HAProxy/postgres credentials to hand out (PostgreSQL never
+leaves the loopback interface, so a remote monitor couldn't use those
+credentials anyway). The admin URL falls back to the node's own IP when
+`tls.hostname` isn't set — single-node has no VIP for `ha`'s `tls: none` to
+fall back to, and authentik always answers HTTPS here regardless of
+provider, so an empty URL was the alternative.
+
+Still missing: nothing from the original list — `restore` and `clean` are
+both done. `restore` mirrors the HA phase's shape (dump-vs-server GUC skew
+check before anything destructive, SFTP to /tmp, DROP/CREATE/load, dump
+deleted after) but is considerably simpler: no Patroni leader to locate
+(there is one postgres container, always reached the same way via `docker
+exec`), and no ownership-normalisation step — the postgres container's only
+superuser IS the app role (`POSTGRES_USER=authentik`), so the HA phase's
+"restored objects owned by postgres, not the app role" trap (NOTES.md)
+cannot happen here. `clean` reuses the exact same `/opt/authentik` compose
+project as `authentik`, so `docker compose down -v` already drops the
+containerized postgres's named volume with it — a shorter step list than
+`ha`'s, since there's no keepalived/haproxy/patroni/etcd to have ever
+existed, and `/etc/letsencrypt` already covers both topologies' certbot
+material without a separate step.
 
 ## Cleaning a site
 
@@ -367,7 +381,7 @@ Security posture, stated plainly:
 
 ## Roadmap
 
-single-node topology (`site.topology: single` — authentik + nginx phases, then `clean`) → fold in the monitoring TUI as `akropolis monitor` → encrypted state secrets.
+first real run of both topologies against actual VMs → fold in the monitoring TUI as `akropolis monitor` (including teaching it single-node's smaller schema) → encrypted state secrets.
 
 ## License
 

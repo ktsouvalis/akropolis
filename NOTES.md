@@ -200,6 +200,52 @@ replacement under a running Patroni).
 does not mention, so this cannot silently recur.
 
 
+## Single-node topology: restore and clean (Sep 2026)
+
+Completes the single-node pipeline. Both turned out considerably simpler
+than expected once actually written, for the same underlying reason: one
+node, one containerized postgres, no DCS to coordinate with.
+
+`restore` drops the HA phase's Patroni-leader lookup (there is exactly one
+postgres, always reached the same way, via `docker exec` into
+`authentik-postgresql-1` rather than `sudo -u postgres psql` on bare metal)
+and — more interesting — drops the ownership-normalisation step entirely.
+The HA phase's "restored objects owned by postgres, not the app role" trap
+exists because psql runs there as the postgres SUPERUSER while the app
+connects as a separate `authentik` role; a dump loaded without explicit
+`OWNER TO` ends up unwritable by the app. On single-node this structural
+mismatch cannot occur: `POSTGRES_USER=authentik` in
+authentik-single-env.j2 means the postgres container's *only* superuser is
+already named authentik — there is no separate postgres role to accidentally
+own anything. One topology difference quietly closed an entire category of
+bug rather than needing code to work around it.
+
+Deliberately did NOT carry over `restore.database`/`restore.owner` as
+configurable overrides, unlike the HA phase. Both are fixed to "authentik"
+in the single-node phase, matching PG_DB/PG_USER in
+authentik-single-env.j2 — neither of which is itself configurable yet. A
+`restore.owner` override would silently not match what the container was
+actually initialised with, which is worse than not offering the knob.
+
+`clean` needed far less new code than expected: STEPS_SINGLE and GONE_SINGLE
+turned out to mostly be "the same paths, minus the ones that never existed."
+The `/opt/authentik` teardown step already correctly handles the
+containerized postgres too, since `authentik` (single) deliberately reuses
+that exact compose project directory (see the "authentik + tls phases"
+entry above) — `docker compose down -v` drops the named `database` volume
+along with the containers, no separate step needed. `/etc/letsencrypt`
+already covered single-node's own certbot renewal hook the same way it
+covers the HA cluster's certbot distribution key, for the same reason: both
+live under that one directory. The only genuinely new step is a shorter
+`STEPS_SINGLE`/`GONE_SINGLE` pair — the original STEPS/GONE would have
+*worked* against a single-node host too (every HA-only command is
+`2>/dev/null`-guarded and ends in `; true`, so it silently no-ops on paths
+that never existed), but an operator would have seen a green "keepalived
+down (VIP released)" checkmark on a host that never had keepalived, which
+is the kind of small dishonesty this codebase has otherwise been careful to
+avoid (see preflight's whole state-aware design).
+
+
 ## Single-node topology: handoff phase, and a stale monitor port (Sep 2026)
 
 Two things, found while wiring up the handoff phase.

@@ -22,6 +22,7 @@ from .phases.base import PhaseContext, run_phases
 from .phases.authentik_phase import AuthentikPhase
 from .phases.authentik_single_phase import AuthentikSinglePhase
 from .phases.authentik_certs_phase import AuthentikCertsPhase
+from .phases.restore_single_phase import RestoreSinglePhase
 from .phases.handoff_single_phase import HandoffSinglePhase
 from .phases.base_setup import BasePhase
 from .phases.clean_phase import CleanPhase
@@ -44,9 +45,9 @@ console = Console()
 # has no `tls`/nginx phase either — authentik's own core webserver serves
 # HTTPS directly (port 443 — see authentik-single-env.j2), so `certs` talks
 # to authentik's own certificate discovery + Web Certificate API instead of
-# rendering an nginx cert directory (see authentik_certs_phase.py). NOTE:
-# single-node `restore` isn't wired in yet, and `clean` doesn't know single's
-# paths yet either — next patches.
+# rendering an nginx cert directory (see authentik_certs_phase.py). `clean`
+# is topology-aware too (see clean_phase.py) — invoked as its own subcommand,
+# not part of either pipeline below.
 PIPELINE_HA = [
     PreflightPhase(),
     BasePhase(),
@@ -64,6 +65,7 @@ PIPELINE_SINGLE = [
     BasePhase(),
     AuthentikSinglePhase(),
     AuthentikCertsPhase(),
+    RestoreSinglePhase(),   # no-op unless restore.sql_file is set
     HandoffSinglePhase(),
 ]
 
