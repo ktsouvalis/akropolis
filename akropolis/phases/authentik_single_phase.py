@@ -44,7 +44,7 @@ import secrets as pysecrets
 import shlex
 from pathlib import Path
 
-from ..remote import push_binary, push_file, render
+from ..remote import base_url, push_binary, push_file, render
 from .authentik_phase import BRAND_FIELDS, apply_brand, dump_logs, wait_healthy
 from .base import Phase, PhaseContext
 
@@ -220,6 +220,7 @@ class AuthentikSinglePhase(Phase):
                      bootstrap_token=sec["bootstrap_token"],
                      bootstrap_email=acfg.get("bootstrap", {}).get("email", ""),
                      error_reporting=error_reporting,
+                     base_url=base_url(cfg),
                      email=email)
         # uploads happen before the compose file is rendered, so the mounts
         # in it always refer to files that are already on the node

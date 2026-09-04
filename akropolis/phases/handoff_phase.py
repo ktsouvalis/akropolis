@@ -19,6 +19,7 @@ from pathlib import Path
 
 import yaml
 
+from ..remote import base_url as _base_url
 from ..remote import render
 from .base import Phase, PhaseContext, console
 
@@ -31,10 +32,7 @@ class HandoffPhase(Phase):
         return Path(mon.get("output") or f"./config.{ctx.cfg.name}.monitor.yml")
 
     def _url(self, ctx: PhaseContext) -> str:
-        cfg = ctx.cfg
-        if cfg.tls.provider == "none":
-            return f"http://{cfg.network.vip}"
-        return f"https://{cfg.tls.hostname}"
+        return _base_url(ctx.cfg)
 
     def _priorities(self, ctx: PhaseContext) -> list[int]:
         raw = ((ctx.cfg.raw.get("network") or {}).get("vrrp") or {})

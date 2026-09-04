@@ -28,6 +28,13 @@ AUTHENTIK_SECRET_KEY={{ secret_key }}
 # NOTES.md for the two real bugs it caused before this rewrite.
 
 AUTHENTIK_ERROR_REPORTING__ENABLED={{ 'true' if error_reporting else 'false' }}
+
+# Bootstrap value for the Base URL system setting — fixes the Admin
+# interface's "The base URL has not been configured" banner. Only takes
+# effect on a truly first start (authentik never overwrites a value already
+# set via the Admin UI/API), and falls back to this node's own IP when
+# tls.hostname was left blank (see remote.base_url() / config.py).
+AUTHENTIK_WEB__BASE_URL={{ base_url }}
 {% if email %}
 
 # SMTP — password resets, MFA email stage, notifications (guide 7.x .env)

@@ -138,6 +138,28 @@ def wait_for(conn: NodeConn, cmd: str, expect: str | None = None,
     return False
 
 
+def base_url(cfg) -> str:
+    """The external URL an operator/browser reaches this site at.
+
+    Fed into AUTHENTIK_WEB__BASE_URL (a bootstrap value: authentik copies it
+    into the Base URL system setting on first start ONLY, never overwrites a
+    value already set via the Admin interface/API — see docs.goauthentik.io/
+    sys-mgmt/settings) and reused for the handoff landing card, so the two
+    can't independently drift.
+    """
+    if cfg.topology == "single":
+        # authentik's own core webserver always serves HTTPS on 443 here,
+        # regardless of tls.provider (self-signed on first boot, or a real
+        # cert via acme/import — see authentik_certs_phase.py). hostname can
+        # be blank only for single+self_signed (config.py); fall back to the
+        # node's own IP in that case.
+        host = cfg.tls.hostname or cfg.nodes[0].ip
+        return f"https://{host}"
+    if cfg.tls.provider == "none":
+        return f"http://{cfg.network.vip}"
+    return f"https://{cfg.tls.hostname}"
+
+
 def gen_password() -> str:
     import secrets as _s
     return _s.token_urlsafe(24)

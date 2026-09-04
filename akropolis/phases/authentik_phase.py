@@ -36,7 +36,7 @@ import secrets as pysecrets
 import shlex
 from pathlib import Path
 
-from ..remote import push_binary, push_file, render, wait_for
+from ..remote import base_url, push_binary, push_file, render, wait_for
 from .base import Phase, PhaseContext, console
 
 HEALTHY = ("docker inspect -f '{{.State.Health.Status}}' authentik-server-1 "
@@ -322,6 +322,7 @@ class AuthentikPhase(Phase):
                      bootstrap_password=sec["bootstrap_password"],
                      bootstrap_token=sec["bootstrap_token"],
                      bootstrap_email=acfg.get("bootstrap", {}).get("email", ""),
+                     base_url=base_url(cfg),
                      email=email)
         # uploads happen before the compose file is rendered, so the mounts
         # in it always refer to files that are already on the node

@@ -129,6 +129,12 @@ class RestorePhase(Phase):
         return [p for p in params if p not in known]
 
     # ------------------------------------------------------------------ plan
+    def needs_confirm(self, ctx: PhaseContext) -> bool:
+        # Only the actually-destructive path (sql_file set) needs a human
+        # to say yes; the no-op path has nothing to confirm and should flow
+        # straight through to handoff like any other completed phase.
+        return self._sql_file(ctx) is not None
+
     def plan(self, ctx: PhaseContext) -> list[str]:
         local = self._sql_file(ctx)
         if local is None:
@@ -421,20 +427,15 @@ GRANT ALL ON SCHEMA public TO {owner};
         ctx.record(leader.node.name, "verify: all public tables owned by the app role",
                    stray == 0, f"{stray} owned by another role" if stray else "")
 
-        # The restored dump carries its OWN brand row, which may point at assets
-        # this cluster does not have (broken image on the login page) or at the
-        # stock logo. Re-apply the configured branding so the database and the
-        # mounted files agree again.
-        branding = (ctx.cfg.raw.get("authentik") or {}).get("branding") or {}
-        token_now = ctx.state.data["generated"].get("authentik_bootstrap_token", "")
-        if branding and token_now:
-            apply_brand(ctx, ctx.fleet.conns[0], branding, token_now)
-
         # The restore replaced the database the bootstrap API token lived in.
-        # That token is what the monitor authenticates with, so it is almost
-        # certainly dead now — and the failure surfaces far away, as an
-        # "unauthorized" panel in the dashboard hours later. Say it here.
+        # That token is what the monitor authenticates with — AND it is what
+        # the branding re-apply just below uses to talk to the API. Check it
+        # HERE, first: if it's dead, letting apply_brand() try anyway means
+        # its own lookup gets a 401 and reports "could not find the default
+        # brand" — which is misleading (the brand is fine; the token just
+        # isn't valid against the database that was just loaded).
         token = ctx.state.data["generated"].get("authentik_bootstrap_token", "")
+        tok_ok = True
         if token:
             r = ctx.fleet.conns[0].run(
                 f"curl -sk -H {shlex.quote('Authorization: Bearer ' + token)} "
@@ -448,6 +449,22 @@ GRANT ALL ON SCHEMA public TO {owner};
                        "scope) and put it in the monitor config, or its Workers and "
                        "Worker Queue panels will read 'unauthorized'",
                        warn=not tok_ok)
+
+        # The restored dump carries its OWN brand row, which may point at assets
+        # this cluster does not have (broken image on the login page) or at the
+        # stock logo. Re-apply the configured branding so the database and the
+        # mounted files agree again — but only with a token proven live above;
+        # a dead token would otherwise surface as a confusing brand-not-found
+        # warning from inside apply_brand() instead of the real cause.
+        branding = (ctx.cfg.raw.get("authentik") or {}).get("branding") or {}
+        if branding and token and not tok_ok:
+            ctx.record("cluster", "branding re-apply skipped", True,
+                       "bootstrap token is dead post-restore (see the check above, "
+                       "not a missing brand) — get a fresh token and re-apply "
+                       "branding by hand, or --replay restore once state has a live one",
+                       warn=True)
+        elif branding and token:
+            apply_brand(ctx, ctx.fleet.conns[0], branding, token)
 
         ok = tables > 0 and users > 0 and writable and stray == 0
         for conn in ctx.fleet:

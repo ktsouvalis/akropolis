@@ -16,6 +16,7 @@ from pathlib import Path
 
 import yaml
 
+from ..remote import base_url as _base_url
 from ..remote import render
 from .base import Phase, PhaseContext, console
 
@@ -28,13 +29,7 @@ class HandoffSinglePhase(Phase):
         return Path(mon.get("output") or f"./config.{ctx.cfg.name}.monitor.yml")
 
     def _url(self, ctx: PhaseContext) -> str:
-        # authentik's own core webserver always answers HTTPS on 443 here,
-        # tls.provider none/self_signed included (self-signed by default) —
-        # see authentik-single-env.j2 and NOTES.md. Unlike the HA cluster
-        # (which falls back to the VIP for tls: none), single-node has no
-        # VIP to fall back to — fall back to the node's own IP instead, so
-        # this is never an empty "https://" when hostname wasn't set.
-        return f"https://{ctx.cfg.tls.hostname or ctx.cfg.nodes[0].ip}"
+        return _base_url(ctx.cfg)
 
     # ------------------------------------------------------------------ plan
     def plan(self, ctx: PhaseContext) -> list[str]:

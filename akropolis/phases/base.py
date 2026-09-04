@@ -97,9 +97,22 @@ class Phase(ABC):
     @abstractmethod
     def verify(self, ctx: PhaseContext) -> bool: ...
 
+    def needs_confirm(self, ctx: PhaseContext) -> bool:
+        """Whether apply() should be gated behind the y/N (or typed-name)
+        confirmation. Defaults to "yes, unless read_only" — override this for
+        a phase that is OPTIONAL and can be a genuine no-op depending on
+        config (e.g. restore with no sql_file set): apply() will do nothing
+        destructive in that case, so there is nothing to confirm, and forcing
+        the confirmation just gives the operator a chance to accidentally
+        halt the whole pipeline on a phase that was never going to touch
+        anything. A phase whose plan() says "will be SKIPPED" should return
+        False here for that state.
+        """
+        return not self.read_only
 
-def _confirm(cfg: SiteConfig, phase: Phase) -> bool:
-    if phase.read_only:
+
+def _confirm(cfg: SiteConfig, phase: Phase, ctx: PhaseContext) -> bool:
+    if not phase.needs_confirm(ctx):
         return True
     if cfg.environment == "production":
         console.print(
@@ -125,7 +138,7 @@ def run_phases(phases: list[Phase], ctx: PhaseContext, replay: bool = False) -> 
         for line in phase.plan(ctx):
             console.print(f"  • {line}")
 
-        if not _confirm(ctx.cfg, phase):
+        if not _confirm(ctx.cfg, phase, ctx):
             console.print("[yellow]not confirmed — stopping.[/yellow]")
             ctx.state.mark_phase(phase.name, "declined")
             return False

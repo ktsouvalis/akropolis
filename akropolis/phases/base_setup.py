@@ -80,7 +80,10 @@ class BasePhase(Phase):
                    "nothing beyond the public 80/443 for a monitor to reach)")
         lines = [
             f"set hostname on each node ({', '.join(n.name for n in cfg.nodes)})",
-            "manage an akropolis-marked block in /etc/hosts with all node entries",
+        ]
+        if cfg.topology == "ha":
+            lines.append("manage an akropolis-marked block in /etc/hosts with all node entries")
+        lines += [
             f"apt update{' && apt upgrade' if upgrade else ''} && install baseline packages + chrony",
             "install Docker CE from download.docker.com (keyring + repo + packages)",
             ufw_base,
@@ -104,14 +107,15 @@ class BasePhase(Phase):
             r = conn.run(f"hostnamectl set-hostname {conn.node.name}")
             ctx.record(node, "hostname", r.ok, conn.node.name if r.ok else r.err)
 
-            # marker-managed /etc/hosts block (removable/replaceable on re-run)
-            script = (
-                "sed -i '/# BEGIN akropolis/,/# END akropolis/d' /etc/hosts && "
-                "printf '# BEGIN akropolis\\n%s\\n# END akropolis\\n' "
-                f"'{hosts_block}' >> /etc/hosts"
-            )
-            r = conn.run(script)
-            ctx.record(node, "/etc/hosts block", r.ok, r.err if not r.ok else "")
+            if cfg.topology == "ha":
+                # marker-managed /etc/hosts block (removable/replaceable on re-run)
+                script = (
+                    "sed -i '/# BEGIN akropolis/,/# END akropolis/d' /etc/hosts && "
+                    "printf '# BEGIN akropolis\\n%s\\n# END akropolis\\n' "
+                    f"'{hosts_block}' >> /etc/hosts"
+                )
+                r = conn.run(script)
+                ctx.record(node, "/etc/hosts block", r.ok, r.err if not r.ok else "")
 
             ctx.begin(node, "apt update" + (" + upgrade" if upgrade else ""))
             r = conn.run(f"{APT} update", timeout=300)

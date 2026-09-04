@@ -62,10 +62,11 @@ class PreflightPhase(Phase):
             f"SSH to {len(cfg.nodes)} node(s) as {cfg.ssh.user!r} (auth: {cfg.ssh.auth}) and run read-only checks:",
             "reachability + sudo, OS release, interface "
             f"{cfg.network.interface!r} exists with MTU {cfg.network.expected_mtu}",
-            f"clock skew across nodes ≤ 5s, ≥ 20 GB free on /",
+            f"≥ 20 GB free on /",
             f"required ports free: {', '.join(map(str, ports))}",
         ]
         if cfg.topology == "ha":
+            lines.append("clock skew across nodes ≤ 5s (Patroni/etcd are sensitive to it)")
             lines.append(f"VIP {cfg.network.vip} is unclaimed")
             lines.append("inter-node MTU path (ping with DF bit at expected MTU)")
         if cfg.refuse_existing:

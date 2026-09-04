@@ -217,7 +217,8 @@ def load(path: str | Path) -> SiteConfig:
         problems.append(f"tls.provider must be one of {sorted(VALID_TLS_PROVIDERS)}, got {tls.provider!r}")
     if tls.provider == "none" and environment == "production":
         problems.append("tls.provider 'none' is refused when site.environment is 'production'")
-    if tls.provider in {"self_signed", "acme", "import"} and not tls.hostname:
+    hostname_optional = topology == "single" and tls.provider == "self_signed"
+    if tls.provider in {"self_signed", "acme", "import"} and not tls.hostname and not hostname_optional:
         problems.append(f"tls.hostname is required for provider {tls.provider!r}")
     if tls.provider == "acme":
         if not tls.acme.get("directory_url"):

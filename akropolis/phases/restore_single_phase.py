@@ -91,6 +91,9 @@ class RestoreSinglePhase(Phase):
         return [p for p in params if p not in known]
 
     # ------------------------------------------------------------------ plan
+    def needs_confirm(self, ctx: PhaseContext) -> bool:
+        return self._sql_file(ctx) is not None
+
     def plan(self, ctx: PhaseContext) -> list[str]:
         local = self._sql_file(ctx)
         if local is None:
@@ -257,10 +260,29 @@ class RestoreSinglePhase(Phase):
             dump_logs(ctx, conn, "server")
             raise RuntimeError("node never became healthy on the restored database")
 
+        # Check the bootstrap token against the just-restored database BEFORE
+        # the branding re-apply below, which uses this same token to talk to
+        # the API — a dead token there would otherwise surface from inside
+        # apply_brand() as "could not find the default brand", which is
+        # misleading (the brand is fine; the token isn't valid anymore).
+        # verify() re-checks this for the operator-facing record; this copy
+        # only exists to gate whether apply_brand() is worth attempting.
+        token = ctx.state.data["generated"].get("authentik_bootstrap_token", "")
+        tok_ok_now = True
+        if token:
+            r = conn.run(f"curl -sk -H {shlex.quote('Authorization: Bearer ' + token)} "
+                         "-o /dev/null -w '%{http_code}' "
+                         "https://127.0.0.1:443/api/v3/admin/version/", timeout=30)
+            tok_ok_now = r.out.strip() == "200"
+
         branding = (ctx.cfg.raw.get("authentik") or {}).get("branding") or {}
-        token_now = ctx.state.data["generated"].get("authentik_bootstrap_token", "")
-        if branding and token_now:
-            apply_brand(ctx, conn, branding, token_now, port=443)
+        if branding and token and not tok_ok_now:
+            ctx.record(node, "branding re-apply skipped", True,
+                       "bootstrap token is dead post-restore (not a missing brand) — "
+                       "get a fresh token and re-apply branding by hand, or "
+                       "--replay restore once state has a live one", warn=True)
+        elif branding and token:
+            apply_brand(ctx, conn, branding, token, port=443)
 
     # ---------------------------------------------------------------- verify
     def verify(self, ctx: PhaseContext) -> bool:

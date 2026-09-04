@@ -81,7 +81,16 @@ def run_wizard(output: str | None = None) -> Path:
 
     tls: dict = {"provider": provider}
     if provider != "none":
-        tls["hostname"] = _ask("public hostname (FQDN, e.g. auth.example.gr)")
+        if topology == "single" and provider == "self_signed":
+            hostname = input(
+                "public hostname (FQDN, e.g. auth.example.gr) — leave blank to use "
+                "the node's own IP instead (fine here: authentik generates its own "
+                "self-signed cert on single-node either way): "
+            ).strip()
+            if hostname:
+                tls["hostname"] = hostname
+        else:
+            tls["hostname"] = _ask("public hostname (FQDN, e.g. auth.example.gr)")
     if provider == "acme":
         tls["acme"] = {
             "directory_url": _ask("ACME directory URL",
