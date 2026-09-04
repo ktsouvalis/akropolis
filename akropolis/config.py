@@ -28,18 +28,18 @@ DEFAULT_AUTHENTIK_TAG = {"ha": "2026.5.6", "single": "2026.8.1"}
 # Ports that must be free on every node before provisioning (SSH excluded).
 # HA: full stack (etcd, Patroni, HAProxy, nginx+keepalived, Authentik).
 REQUIRED_FREE_PORTS = [80, 443, 2379, 2380, 5432, 5000, 5001, 8008, 9000, 9080, 9081, 9300, 9301, 9443]
-# single: no etcd/Patroni/HAProxy at all — PostgreSQL never leaves the internal
-# Docker network. No nginx either (see NOTES.md: authentik's own core
-# webserver serves HTTPS directly — Web Certificate + /certs discovery —
-# since the target deployment is reached by NAT with no port translation, so
-# whatever the node listens on IS what the public sees). Server HTTPS moves
-# 9443 -> 443; 80 stays free for certbot's standalone ACME challenge, not
-# bound by anything akropolis itself renders. 9444 is the worker's own
-# HTTPS listener — under network_mode: host it would otherwise inherit and
-# squat the server's 443 by starting first, which is fatal here (a failed
-# TLS bind crashes the Rust arbiter), not the silent HTTP-only misroute the
-# HA cluster's worker causes on 9080 — see NOTES.md.
-REQUIRED_FREE_PORTS_SINGLE = [80, 443, 9080, 9081, 9300, 9301, 9444]
+# single: no etcd/Patroni/HAProxy at all — PostgreSQL never leaves the
+# compose-internal Docker network (not even loopback-published; reached via
+# service-name DNS). No nginx, no network_mode: host either — server and
+# worker are ordinary isolated containers, each free to use the image's own
+# default ports with nothing to conflict with (see NOTES.md: the earlier
+# network_mode: host design caused two real bugs before this was found —
+# a worker/server port squat and a privileged-port permission error —
+# neither of which is possible once each container has its own network
+# namespace). Only what's actually published to the HOST needs to be free:
+# 443 (Docker's own port-publish maps it to the server container's internal
+# 9443) and 80, left free by construction for certbot's standalone mode.
+REQUIRED_FREE_PORTS_SINGLE = [80, 443]
 
 
 class ConfigError(Exception):

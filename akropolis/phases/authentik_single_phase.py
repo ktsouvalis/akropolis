@@ -1,9 +1,24 @@
 """authentik (single) — the identity provider on ONE node: PostgreSQL as a
-plain container instead of Patroni, no leader/rolling distinction (there is
-only one node, so docker compose's own `depends_on: condition:
-service_healthy` chain — postgresql → worker → server — is enough; the HA
-phase's bootstrap/rolling split exists specifically to stop three nodes
-racing migrations against one database, which cannot happen here).
+plain container instead of Patroni, no leader/rolling distinction. There is
+only one node and no bridge-network sharing between containers (see below),
+so there is nothing for the HA phase's bootstrap/rolling split to protect
+against — server and worker start concurrently, each depending only on
+postgresql being healthy, and coordinate migrations via Authentik's own
+internal database lock ("waiting to acquire database lock" in its own
+logs) rather than anything akropolis has to choreograph.
+
+Ordinary bridge networking, NOT network_mode: host — matching the official
+reference compose at docs.goauthentik.io/compose.yml. An earlier version of
+this phase used network_mode: host (inherited from the HA cluster's compose
+without the reason — HAProxy routing — that exists for it there) and caused
+two real bugs before a real run surfaced them: the worker inheriting and
+squatting the server's HTTPS port, and the server itself needing
+CAP_NET_BIND_SERVICE to bind a privileged port at all. Neither is possible
+once each container has its own isolated network namespace: the server's
+own internal port (9443) is never privileged, Docker's own port publish
+(root/dockerd, not the containerized process) maps host 443 to it, and
+server/worker can never see each other's ports to conflict over. See
+NOTES.md for the full story.
 
 Deliberately reuses the exact same on-disk path as the HA phase
 (/opt/authentik), so the health-gate, log-dump, and branding helpers from
@@ -147,10 +162,13 @@ class AuthentikSinglePhase(Phase):
         lines = [
             f"render /opt/authentik/.env (0600) + docker-compose.yml on {cfg.nodes[0].name} — "
             f"tag {cfg.authentik_tag}, PostgreSQL as a postgres:16-alpine container "
-            "(loopback-only :5432, named volume `database`)",
-            "server/worker on network_mode: host, listen ports 9080/443/9300 (server) "
-            "9081/9301 (worker) — python3/urllib healthchecks, "
-            "depends_on: worker: condition: service_healthy on server",
+            "(no published port — reached via Docker's own DNS, service name "
+            "'postgresql'; named volume `database`)",
+            "server, worker: ordinary isolated containers (no network_mode: host, "
+            "no AUTHENTIK_LISTEN__* overrides needed — nothing to conflict over), "
+            "both depend only on postgresql being healthy, python3/urllib "
+            "healthchecks. Docker publishes host 443 -> the server container's "
+            "own 9443 (never a privileged port, so no cap_add either)",
             "AUTHENTIK_SECRET_KEY / postgres password / bootstrap admin password / "
             "bootstrap API token: generated once, pinned in state, never printed",
         ]
@@ -179,8 +197,9 @@ class AuthentikSinglePhase(Phase):
                          "/web/dist/assets/{icons,images}/, AND point the default brand "
                          "at /static/dist/assets/... via the API")
         lines.append("apply: docker compose up -d, then gate on server+worker healthy "
-                     "(compose itself waits for postgresql, then worker, before starting "
-                     "server — no manual bootstrap choreography needed with one node)")
+                     "(both start concurrently once postgresql is healthy; Authentik's "
+                     "own internal database lock coordinates migrations between them — "
+                     "no manual bootstrap choreography needed)")
         lines.append("verify: server+worker healthy, /-/health/ready/ 200, "
                      "API answers with the bootstrap token")
         return lines
@@ -219,15 +238,17 @@ class AuthentikSinglePhase(Phase):
         changed = c1 or c2
         ctx.record(node, "config rendered", True, "changed" if changed else "unchanged")
 
-        # NOTE: on a fresh bootstrap the empty schema migrates in seconds, so
-        # `up -d`'s own dependency-health wait (compose won't start worker
-        # until postgresql is healthy, won't start server until worker is)
-        # never runs long enough to hit compose's ~150s "dependency failed to
-        # start" ceiling — the same trap the restore phase works around on
-        # the HA cluster (see NOTES.md). A single-node restore, when it
-        # exists, will need the identical `--no-deps worker` alone-first fix.
+        # Fresh bootstrap: server and worker start concurrently once
+        # postgresql is healthy (no depends_on between them — see module
+        # docstring), each just waiting on Authentik's own internal database
+        # lock if the other reaches migrations first. Nothing here for
+        # compose's own dependency-health wait to time out on, unlike the
+        # HA cluster's restore phase (see NOTES.md) — that trap was a
+        # consequence of network_mode: host forcing an explicit worker-then-
+        # server order, which single-node no longer has any reason to do.
         ctx.begin(node, "compose up",
-                  "postgresql → worker → server dependency chain; image pull can take minutes")
+                  "postgresql healthy, then server + worker concurrently; "
+                  "image pull can take minutes")
         r = conn.run("cd /opt/authentik && docker compose up -d", timeout=1800)
         ctx.record(node, "starting", r.ok, r.err if not r.ok else "")
         good = r.ok and wait_healthy(ctx, conn, timeout=900,

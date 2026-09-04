@@ -284,21 +284,31 @@ it to `single` changes the shape of the pipeline, not just its size:
   docs](https://docs.goauthentik.io/sys-mgmt/certificates/)) and each
   brand's **Web Certificate** field, which akropolis PATCHes via the API —
   the same mechanism already used for the branding logo/favicon.
+- **Ordinary bridge networking, not `network_mode: host`.** Unlike every HA
+  service, single-node's `server`/`worker` containers are isolated from each
+  other and from the host — matching the [reference compose at
+  docs.goauthentik.io](https://docs.goauthentik.io/compose.yml). Docker's own
+  port publish (`ports: ["443:9443"]` on `server`) maps the host's 443 to the
+  container's own default 9443 — never a privileged port from the container's
+  point of view, so no `cap_add` or root is needed. PostgreSQL isn't even
+  loopback-published; `server`/`worker` reach it by Docker's own DNS
+  (`AUTHENTIK_POSTGRESQL__HOST: postgresql`). An earlier version of this used
+  `network_mode: host` (copied from the HA cluster without the reason —
+  HAProxy routing — that exists for it there) and hit two real bugs before a
+  live run surfaced them: the worker inheriting and squatting the server's
+  HTTPS port, then the server needing a capability to bind 443 at all. Neither
+  is possible once each container has its own network namespace — see
+  NOTES.md for the full story.
+- **Required free ports on the host** are just `80, 443` — everything else
+  (server/worker's own 9000/9443/9300) stays inside their isolated network
+  namespaces and never touches the host at all. Port 80 stays free by
+  construction — nothing akropolis renders binds it — so certbot can use it
+  in standalone mode for ACME issuance and renewal.
 - **A different default `authentik.tag`**: `ha` stays pinned to `2026.5.6`
   (2026.8.0 hit a multi-node embedded-outpost restart loop — see
   NOTES.md); `single` defaults to `2026.8.1`, since a single node has no
   multi-node outpost topology to trigger that bug. Set `authentik.tag`
   explicitly to override either default.
-- **Required free ports** drop to `80, 443, 9080, 9081, 9300, 9301, 9444` —
-  no etcd/Patroni/HAProxy ports (PostgreSQL never leaves the internal Docker
-  network), and 9443 becomes plain 443. Port 80 stays free by construction —
-  nothing akropolis renders binds it — so certbot can use it in standalone
-  mode for ACME issuance and renewal. 9444 is the worker's own HTTPS
-  listener — without it, it inherits and squats the server's 443 by
-  starting first, which is fatal here (see NOTES.md). The `server` service
-  also needs `cap_add: NET_BIND_SERVICE` to bind 443 at all — it runs as a
-  non-root user inside the image, and 443 is a privileged port; the HA
-  cluster never needs this since its server binds 9443, not 443.
 
 Intended use: a fallback instance to bring up quickly if the HA cluster is
 down, not a smaller HA cluster. `preflight`, `base`, `authentik`, and `certs`

@@ -200,7 +200,77 @@ replacement under a running Patroni).
 does not mention, so this cannot silently recur.
 
 
+## Single-node topology: network_mode: host wasn't needed at all (Sep 2026)
+
+Supersedes the two entries directly below (worker squatting 443, then the
+server needing CAP_NET_BIND_SERVICE) — both were real, both got fixed, and
+both turned out to be unnecessary complexity in the first place once the
+actual official reference compose (docs.goauthentik.io/compose.yml) got
+compared against what akropolis was generating.
+
+The reference doesn't use network_mode: host at all. Ordinary bridge
+networking: each container gets its own isolated network namespace,
+containers reach each other by Docker's own compose-network DNS (service
+name), and the one port that needs to reach the outside world is published
+the normal Docker way (`ports: ["443:9443"]` on `server`) — a host-level
+operation performed by dockerd, not a bind() call made by the containerized
+process. Once that's the design, an entire category of problems stops being
+reachable:
+
+- the worker can't squat the server's ports — they're not in the same
+  network namespace, there's nothing to squat
+- the server doesn't need CAP_NET_BIND_SERVICE — its own internal port
+  (9443) was never privileged; Docker's port-publish is what maps 443,
+  running as root at the daemon level, external to the container entirely
+- no AUTHENTIK_LISTEN__* overrides needed anywhere, for either container
+
+single-node's network_mode: host was inherited from the HA cluster's
+compose by pattern-matching, not by an actual reason that applies here — the
+HA cluster needs it for HAProxy routing (each node's Authentik has to reach
+`127.0.0.1:5000`, its own local HAProxy) and per-node identification
+(nginx's `/monitor` endpoint reporting which node answered). Single-node has
+neither: no HAProxy, and no nginx anymore either (see "no nginx after all"
+below) — there was never a reason for it once nginx left the design, it just
+hadn't been reconsidered.
+
+PostgreSQL also drops its loopback publish (`127.0.0.1:5432:5432`) entirely
+now — matches the reference exactly, and `server`/`worker` were always going
+to reach it by service name once bridge networking was in play regardless;
+the loopback publish was leftover host-networking thinking (it was needed
+under network_mode: host because that was the only way server/worker could
+reach a loopback-bound container port — under bridge networking, Docker's
+internal DNS makes that unnecessary and it becomes attack surface for
+nothing).
+
+Lesson, stated plainly: a design copied from a working setup for consistency
+needs its OWN reason to exist in the new context, not just the old context's
+reason. HA's network_mode: host is correct there because HAProxy/nginx need
+it. Nothing about single-node ever needed it — the two bugs below were the
+cost of not checking that before building on top of the assumption.
+
+Not changed in this patch, flagged for later: restore_single_phase.py still
+manually starts the worker alone, gates on it, then starts the server
+--no-deps — a choreography written to dodge compose's own ~150s dependency-
+health-wait ceiling. That ceiling doesn't apply anymore now that server
+never depends on worker at all (see authentik_single_phase.py's compose:
+both start concurrently, coordinating via Authentik's own internal database
+lock — confirmed in a real boot log: "waiting to acquire database lock").
+The manual choreography is still safe, just possibly solving a problem that
+no longer exists on this topology; worth revisiting once single-node has
+been through a real restore.
+
+
 ## Single-node topology: server still couldn't bind 443 — needed a capability, not just the free port (Sep 2026)
+
+**Superseded by the entry above** — kept for the record of how the
+investigation actually went, not as current behavior. The fix described
+here (`cap_add: NET_BIND_SERVICE`) worked and was correct for the
+network_mode: host design it was written for, but that design itself is
+gone as of the entry above; single-node no longer binds a privileged port
+inside any container at all, so there is nothing for this capability to be
+needed for anymore.
+
+
 
 Follow-up to the worker-squatting entry above. Fixing that (worker's HTTPS
 moved to 9444) surfaced a SECOND, separate problem behind it: with 443
@@ -230,6 +300,9 @@ restriction doesn't apply there.
 
 
 ## Single-node topology: worker squats the server's 443, fatally (Sep 2026)
+
+**Superseded by "network_mode: host wasn't needed at all" above** — same
+record-of-investigation note as the entry between this one and that one.
 
 Found on a real run: `authentik-server-1` crash-looped forever — "Up Less
 than a second (health: starting)" on repeat — while the worker sat healthy.
