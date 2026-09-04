@@ -260,7 +260,10 @@ Verify parses the emitted file back and asserts the schema: all top-level keys t
 
 ## Topology: HA vs single-node
 
-`site.topology` picks which phases run. It defaults to `ha` (the 3-node stack
+`site.topology` picks which phases run. `akropolis init` asks for it up
+front and adapts everything downstream (node count, whether it asks for a
+VIP, the monitor-IP question, the restore comment footer) — it defaults to
+`ha` (the 3-node stack
 documented above) and is the only thing most of this README assumes. Setting
 it to `single` changes the shape of the pipeline, not just its size:
 

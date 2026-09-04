@@ -200,6 +200,36 @@ replacement under a running Patroni).
 does not mention, so this cannot silently recur.
 
 
+## Single-node topology: the init wizard never knew it existed (Sep 2026)
+
+Real gap, found the way these are always found: an operator ran `akropolis
+init` expecting a single-node config and got an HA one instead. Every
+single-node patch so far touched config.py, the phases, the templates — and
+never `init_wizard.py`, which is the actual front door. It hardcoded
+`range(1, 4)` for the node loop, always asked for a VIP, and always wrote
+`authentik.tag: "2026.5.6"` explicitly into the generated file — the last
+one being its own small trap: config.py's topology-aware tag default
+(2026.5.6 for ha, 2026.8.1 for single) only applies when `authentik.tag` is
+*absent*, so a wizard-generated single-node config would have silently
+carried the HA pin regardless of topology.
+
+Fix: ask topology first, right after environment, and thread it through
+everything that follows — node count, whether the VIP question is asked at
+all, the network block (no `vip`/`vrrp` keys written for single), and the
+monitor-IP question (skipped entirely for single, matching base_setup.py:
+there is nothing left for a monitor IP to unlock there — see the "stale
+monitor port" entry above). `authentik.tag` is no longer written by the
+wizard at all, for either topology — omitting it is what lets config.py's
+own default logic apply; hardcoding any value here would have re-created
+exactly this class of bug the next time a default changes.
+
+Tested both paths end-to-end with scripted answers (`unittest.mock.patch
+builtins.input`) rather than just reading the diff — the exact sequence and
+count of `input()` calls is precisely the kind of thing that's easy to get
+subtly wrong (an extra or missing prompt shifts every answer after it) and
+hard to catch by inspection alone.
+
+
 ## Single-node topology: restore and clean (Sep 2026)
 
 Completes the single-node pipeline. Both turned out considerably simpler

@@ -49,15 +49,22 @@ def run_wizard(output: str | None = None) -> Path:
 
     site = _ask("site name (short, e.g. uop-test)")
     env = _ask_choice("environment", ["lab", "production"], "lab")
+    topology = _ask_choice(
+        "topology — ha (3-node cluster, VIP+keepalived) or single "
+        "(1 node, no VIP, meant as a break-glass fallback instance)",
+        ["ha", "single"], "ha")
 
+    node_count = 1 if topology == "single" else 3
     nodes = []
-    for i in range(1, 4):
+    for i in range(1, node_count + 1):
         ip = _ask(f"node {i} IP", validate=_valid_ip)
-        name = _ask(f"node {i} name", f"ak-node-{i}")
+        default_name = f"auth-{site}" if topology == "single" else f"ak-node-{i}"
+        name = _ask(f"node {i} name", default_name)
         nodes.append({"name": name, "ip": ip, **({"bootstrap_leader": True} if i == 1 else {})})
 
-    vip = _ask("VIP (virtual IP for keepalived)", validate=_valid_ip)
-    iface = _ask("network interface on the nodes", "ens18")
+    if topology == "ha":
+        vip = _ask("VIP (virtual IP for keepalived)", validate=_valid_ip)
+    iface = _ask("network interface on the node(s)", "ens18")
     mtu = _ask("expected MTU (1400 for VXLAN overlay, 1500 for flat L2)", "1400",
                lambda v: None if v.isdigit() else "must be a number")
 
@@ -118,24 +125,36 @@ def run_wizard(output: str | None = None) -> Path:
             branding[key] = path
     if branding:
         authentik_extra["branding"] = branding
-    monitor_ip = _ask("monitoring host IP (allowed through UFW to Patroni/etcd/HAProxy/"
-                      "Authentik ports; Enter to skip)", default="-",
-                      validate=lambda v: None if v == "-" else _valid_ip(v))
-    monitor_ip = "" if monitor_ip == "-" else monitor_ip
+
+    monitor_ip = ""
+    if topology == "ha":
+        monitor_ip = _ask("monitoring host IP (allowed through UFW to Patroni/etcd/"
+                          "HAProxy/Authentik ports; Enter to skip)", default="-",
+                          validate=lambda v: None if v == "-" else _valid_ip(v))
+        monitor_ip = "" if monitor_ip == "-" else monitor_ip
+    # single-node opens no monitor-specific UFW rule at all — port 443 is
+    # already public via the base allow-80/443 rule, and PostgreSQL never
+    # leaves the loopback interface, so there is nothing left to gate behind
+    # a monitor IP (see base_setup.py / NOTES.md). Not asked here for that
+    # reason, not because it was forgotten.
 
     cfg = {
-        "site": {"name": site, "environment": env},
+        "site": {"name": site, "environment": env, "topology": topology},
         "provision": {"state_file": f".state/{site}.json", "refuse_existing": True},
         "ssh": {"user": user, "become": user != "root", "auth": auth,
                 **({"key_file": key_file} if key_file else {}), "port": 22},
         "nodes": nodes,
-        "network": {"vip": vip, "interface": iface, "expected_mtu": int(mtu),
-                    "vrrp": {"router_id": 51}, "check_l2_adjacency": True},
+        "network": {"interface": iface, "expected_mtu": int(mtu),
+                    **({"vip": vip, "vrrp": {"router_id": 51}, "check_l2_adjacency": True}
+                       if topology == "ha" else {})},
         "tls": tls,
-        "authentik": {"tag": "2026.5.6",
-                      "bootstrap": {"create_admin": True, "create_api_token": True,
-                                    **({"email": admin_email} if admin_email else {})},
-                      **authentik_extra},
+        "authentik": {
+            # tag intentionally omitted — config.py picks a topology-aware
+            # default (ha: 2026.5.6, single: 2026.8.1; see NOTES.md for why
+            # they differ) unless authentik.tag is set explicitly here.
+            "bootstrap": {"create_admin": True, "create_api_token": True,
+                          **({"email": admin_email} if admin_email else {})},
+            **authentik_extra},
         "secrets": {"source": "prompt"},
         "monitor": {"emit": True, "output": f"./config.{site}.monitor.yml",
                     **({"ip": monitor_ip} if monitor_ip else {})},
@@ -152,17 +171,32 @@ def run_wizard(output: str | None = None) -> Path:
         # restore is a cutover-time move — but a section that isn't visible in
         # the generated file may as well not exist. yaml.safe_dump can't emit
         # comments, so it's appended by hand.
-        f.write(
-            "\n"
-            "# Optional — database restore (the migration/cutover move).\n"
-            "# Uncomment and set the dump path (on THIS workstation), then run:\n"
-            "#   akropolis provision <this file> --replay restore\n"
-            "# DESTRUCTIVE when enabled: drops the current database first.\n"
-            "# restore:\n"
-            "#   sql_file: ./dumps/authentik-prod.sql   # .sql or .sql.gz\n"
-            "#   database: authentik                    # default\n"
-            "#   timeout: 3600                          # psql budget, seconds\n"
-        )
+        if topology == "ha":
+            f.write(
+                "\n"
+                "# Optional — database restore (the migration/cutover move).\n"
+                "# Uncomment and set the dump path (on THIS workstation), then run:\n"
+                "#   akropolis provision <this file> --replay restore\n"
+                "# DESTRUCTIVE when enabled: drops the current database first.\n"
+                "# restore:\n"
+                "#   sql_file: ./dumps/authentik-prod.sql   # .sql or .sql.gz\n"
+                "#   database: authentik                    # default\n"
+                "#   timeout: 3600                          # psql budget, seconds\n"
+            )
+        else:
+            f.write(
+                "\n"
+                "# Optional — database restore (the migration/cutover move).\n"
+                "# Uncomment and set the dump path (on THIS workstation), then run:\n"
+                "#   akropolis provision <this file> --replay restore\n"
+                "# DESTRUCTIVE when enabled: drops the current database first.\n"
+                "# Database/owner are NOT configurable here — single-node's postgres\n"
+                "# container is always named/owned \"authentik\" (see NOTES.md).\n"
+                "# restore:\n"
+                "#   sql_file: ./dumps/authentik-prod.sql   # .sql or .sql.gz\n"
+                "#   timeout: 3600                          # psql load budget, seconds\n"
+                "#   migration_timeout: 3600                # worker-healthy budget, seconds\n"
+            )
     console.print(f"\n[green]wrote {out}[/green] — review it, then run: "
                   f"[bold]akropolis provision {out}[/bold]")
     return out

@@ -199,4 +199,3 @@ class CleanPhase(Phase):
             console.print("[green]nodes are bare — `akropolis provision` starts "
                           "from scratch (all secrets regenerated).[/green]")
         return ok
-
