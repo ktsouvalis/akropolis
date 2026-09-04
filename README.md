@@ -295,7 +295,10 @@ it to `single` changes the shape of the pipeline, not just its size:
   nothing akropolis renders binds it — so certbot can use it in standalone
   mode for ACME issuance and renewal. 9444 is the worker's own HTTPS
   listener — without it, it inherits and squats the server's 443 by
-  starting first, which is fatal here (see NOTES.md).
+  starting first, which is fatal here (see NOTES.md). The `server` service
+  also needs `cap_add: NET_BIND_SERVICE` to bind 443 at all — it runs as a
+  non-root user inside the image, and 443 is a privileged port; the HA
+  cluster never needs this since its server binds 9443, not 443.
 
 Intended use: a fallback instance to bring up quickly if the HA cluster is
 down, not a smaller HA cluster. `preflight`, `base`, `authentik`, and `certs`

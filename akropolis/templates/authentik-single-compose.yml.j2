@@ -31,6 +31,13 @@ services:
         condition: service_healthy
     image: ghcr.io/goauthentik/server:${AUTHENTIK_TAG}
     restart: unless-stopped
+    # non-root inside the image ("Not running as root, disabling permission
+    # fixes" at boot) — binding 443 (a privileged port, <1024) needs this
+    # capability, not full root the way the worker gets it for the docker
+    # socket. Confirmed against a real crash: run_tls(server, 0.0.0.0:443)
+    # failing with "Permission denied (os error 13)" without it.
+    cap_add:
+      - NET_BIND_SERVICE
     healthcheck:
       test: ["CMD", "python3", "-c", "import urllib.request,ssl,sys; ctx=ssl.create_default_context(); ctx.check_hostname=False; ctx.verify_mode=ssl.CERT_NONE; sys.exit(0) if urllib.request.urlopen('https://localhost:443/-/health/live/', timeout=5, context=ctx).status == 200 else sys.exit(1)"]
       interval: 30s

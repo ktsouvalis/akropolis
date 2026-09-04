@@ -200,6 +200,35 @@ replacement under a running Patroni).
 does not mention, so this cannot silently recur.
 
 
+## Single-node topology: server still couldn't bind 443 — needed a capability, not just the free port (Sep 2026)
+
+Follow-up to the worker-squatting entry above. Fixing that (worker's HTTPS
+moved to 9444) surfaced a SECOND, separate problem behind it: with 443
+actually free, the server still crashed, now with an explicit error instead
+of a silent arbiter shutdown —
+
+    Permission denied (os error 13)
+    task.name=authentik_axum::server::run_tls(server, 0.0.0.0:443)
+
+— and, earlier in the same boot, `"Not running as root, disabling
+permission fixes"`. 443 is a privileged port (<1024); binding it needs
+`CAP_NET_BIND_SERVICE` or root, and the server container's process runs as
+a non-root user inside the image by default. This was the original
+suspicion before the worker-squatting bug was found and fixed first — both
+were real, independent problems stacked on top of each other, and the first
+one's crash was masking the second's until it was cleared out of the way.
+
+Fix: `cap_add: [NET_BIND_SERVICE]` on the `server` service only — the
+minimum privilege needed, not full root the way the worker gets it for the
+docker socket. The HA cluster never hits this at all: its server binds 9443
+(nginx owns the real 443 externally), never a privileged port, so there was
+no precedent for it in that template to check against.
+
+Port 80 is unaffected — certbot's standalone bind happens as a host-level
+process over SSH (root/sudo), not inside a container, so the same class of
+restriction doesn't apply there.
+
+
 ## Single-node topology: worker squats the server's 443, fatally (Sep 2026)
 
 Found on a real run: `authentik-server-1` crash-looped forever — "Up Less
