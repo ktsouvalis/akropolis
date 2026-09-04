@@ -62,11 +62,16 @@ def run_wizard(output: str | None = None) -> Path:
         name = _ask(f"node {i} name", default_name)
         nodes.append({"name": name, "ip": ip, **({"bootstrap_leader": True} if i == 1 else {})})
 
+    # interface / MTU are only ever read on the HA path: the interface is what
+    # keepalived binds the VIP to, and the MTU is what has to survive intact
+    # between nodes for VRRP/etcd/Patroni. Single-node has neither, so asking
+    # produces two answers nothing consults — and, worse, a preflight check
+    # that can fail a perfectly good host over a value that does not matter.
     if topology == "ha":
         vip = _ask("VIP (virtual IP for keepalived)", validate=_valid_ip)
-    iface = _ask("network interface on the node(s)", "ens18")
-    mtu = _ask("expected MTU (1400 for VXLAN overlay, 1500 for flat L2)", "1400",
-               lambda v: None if v.isdigit() else "must be a number")
+        iface = _ask("network interface on the nodes", "ens18")
+        mtu = _ask("expected MTU (1400 for VXLAN overlay, 1500 for flat L2)", "1400",
+                   lambda v: None if v.isdigit() else "must be a number")
 
     user = _ask("SSH user", "root")
     auth = _ask_choice("SSH auth", ["key", "agent", "password"], "key")
@@ -92,13 +97,27 @@ def run_wizard(output: str | None = None) -> Path:
         else:
             tls["hostname"] = _ask("public hostname (FQDN, e.g. auth.example.gr)")
     if provider == "acme":
+        # staging used to be hardcoded true here "to be safe". It was not: the
+        # first run installed an untrusted staging certificate, and flipping
+        # the flag afterwards did NOT produce a real one, because certbot sees
+        # a lineage with ~89 days left and declines as not due for renewal.
+        # The operator was left issuing the certificate by hand. Ask instead,
+        # default to the real thing, and let _acme() detect the staging->prod
+        # switch and force it through (see authentik_certs_phase.py).
+        staging = input(
+            "use the Let's Encrypt STAGING environment? Staging certificates are "
+            "NOT trusted by browsers — only useful for rehearsing issuance "
+            "without spending rate limit. [y/N] ").strip().lower() in ("y", "yes")
         tls["acme"] = {
             "directory_url": _ask("ACME directory URL",
                                   "https://acme-v02.api.letsencrypt.org/directory"),
-            "email": _ask("ACME account email"),
-            "staging": True,
+            "email": _ask("ACME account email (expiry and problem notices go here)"),
+            "staging": staging,
         }
-        console.print("[dim]acme.staging is set to true — flip it after one clean end-to-end run[/dim]")
+        if staging:
+            console.print("[yellow]acme.staging: true — the issued certificate will not be "
+                          "trusted by browsers. Set it to false and re-run the certs phase "
+                          "when you are done rehearsing; akropolis will force the reissue.[/yellow]")
     if provider == "import":
         tls["import"] = {"fullchain": _ask("path to fullchain.pem"),
                          "privkey": _ask("path to privkey.pem")}
@@ -153,9 +172,9 @@ def run_wizard(output: str | None = None) -> Path:
         "ssh": {"user": user, "become": user != "root", "auth": auth,
                 **({"key_file": key_file} if key_file else {}), "port": 22},
         "nodes": nodes,
-        "network": {"interface": iface, "expected_mtu": int(mtu),
-                    **({"vip": vip, "vrrp": {"router_id": 51}, "check_l2_adjacency": True}
-                       if topology == "ha" else {})},
+        **({"network": {"interface": iface, "expected_mtu": int(mtu), "vip": vip,
+                        "vrrp": {"router_id": 51}, "check_l2_adjacency": True}}
+           if topology == "ha" else {}),
         "tls": tls,
         "authentik": {
             # tag intentionally omitted — config.py picks a topology-aware

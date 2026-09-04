@@ -35,6 +35,42 @@ from .base import Phase, PhaseContext
 CERT_PORT = 443  # authentik's own HTTPS listener, single-node topology
 
 
+def set_web_certificate(ctx: PhaseContext, conn, token: str, hostname: str,
+                        cert_dir: str = "") -> bool:
+    """Point the default brand's `web_certificate` at the discovered keypair.
+
+    Module-level rather than a method because the `restore` phase has to run
+    it again: on single-node topology authentik's OWN webserver terminates
+    TLS, and which certificate it presents is a column on the brand row — so
+    `DROP DATABASE` takes that setting with it and the restored dump brings
+    the old instance's brand back in its place, pointing at a keypair that
+    does not exist here. The node then silently falls back to authentik's
+    self-signed certificate, which is exactly the sort of failure that shows
+    up as "the UI is broken" rather than as anything cert-shaped.
+    """
+    node = conn.node.name
+    r = conn.run(
+        f"curl -sk -H {shlex.quote('Authorization: Bearer ' + token)} "
+        f"{shlex.quote(f'https://127.0.0.1:{CERT_PORT}/api/v3/crypto/certificatekeypairs/?page_size=200')} "
+        f"| jq -r --arg n {shlex.quote(hostname)} '.results[] | select(.name==$n) | .pk' | head -1",
+        timeout=60)
+    cert_uuid = r.out.strip()
+    if not r.ok or not cert_uuid:
+        ctx.record(node, "certificate discovered", False,
+                   f"no keypair named {hostname!r} found"
+                   + (f" — check {cert_dir} and " if cert_dir else " — check ")
+                   + "'docker compose logs worker' on the node", warn=True)
+        return False
+    ctx.record(node, "certificate discovered", True, f"keypair {cert_uuid}")
+
+    code = patch_brand(ctx, conn, token, {"web_certificate": cert_uuid}, port=CERT_PORT)
+    ok = code == "200"
+    ctx.record(node, "web certificate set on default brand", ok,
+               "" if ok else f"HTTP {code} — set it manually in System > Brands",
+               warn=not ok)
+    return ok
+
+
 class AuthentikCertsPhase(Phase):
     name = "certs"
 
@@ -55,10 +91,17 @@ class AuthentikCertsPhase(Phase):
                     "auto-generated self-signed certificate, nothing to install"]
         lines = []
         if p == "acme":
+            acme = ctx.cfg.tls.acme or {}
             lines.append(f"certbot --standalone against "
-                        f"{ctx.cfg.tls.acme.get('directory_url', '?')} (binds :80 "
-                        "briefly — free by construction); deploy hook re-copies "
-                        "and restarts the worker on every future renewal")
+                        f"{acme.get('directory_url', '?')}"
+                        + (" [yellow]--staging (certificate will NOT be browser-trusted)"
+                           "[/yellow]" if acme.get("staging") else "")
+                        + " (binds :80 briefly — free by construction); deploy hook "
+                          "re-copies and restarts the worker on every future renewal")
+            lines.append("reissue is forced automatically when the certificate already "
+                        "on the node was issued by the other environment (staging vs "
+                        "production) — certbot would otherwise decline it as not due "
+                        "for renewal and leave the wrong certificate in place")
         else:  # import
             lines.append(f"validate {ctx.cfg.tls.import_.get('fullchain')} + privkey "
                         "on this workstation (key↔cert match, SAN coverage, expiry)")
@@ -98,26 +141,7 @@ class AuthentikCertsPhase(Phase):
         if r.ok:
             time.sleep(15)  # discovery runs on worker startup; give it a moment
 
-        token = self._token(ctx)
-        name = cfg.tls.hostname
-        r = conn.run(
-            f"curl -sk -H {shlex.quote('Authorization: Bearer ' + token)} "
-            f"{shlex.quote(f'https://127.0.0.1:{CERT_PORT}/api/v3/crypto/certificatekeypairs/')} "
-            f"| jq -r --arg n {shlex.quote(name)} '.results[] | select(.name==$n) | .pk' | head -1",
-            timeout=60)
-        cert_uuid = r.out.strip()
-        if not r.ok or not cert_uuid:
-            ctx.record(node, "certificate discovered", False,
-                       f"no keypair named {name!r} found — check {cert_dir} and "
-                       "'docker compose logs worker' on the node", warn=True)
-            return
-        ctx.record(node, "certificate discovered", True, f"keypair {cert_uuid}")
-
-        code = patch_brand(ctx, conn, token, {"web_certificate": cert_uuid}, port=CERT_PORT)
-        ok = code == "200"
-        ctx.record(node, "web certificate set on default brand", ok,
-                   "" if ok else f"HTTP {code} — set it manually in System > Brands",
-                   warn=not ok)
+        set_web_certificate(ctx, conn, self._token(ctx), cfg.tls.hostname, cert_dir)
 
     # ------------------------------------------------------------ providers
     def _acme(self, ctx: PhaseContext, conn, cert_dir: str) -> None:
@@ -129,20 +153,51 @@ class AuthentikCertsPhase(Phase):
         ctx.record(node, "certbot installed", r.ok, r.err if not r.ok else "")
 
         acme = cfg.tls.acme or {}
-        staging_flag = " --staging" if acme.get("staging") else ""
+        staging = bool(acme.get("staging"))
+        staging_flag = " --staging" if staging else ""
+        live = f"/etc/letsencrypt/live/{cfg.tls.hostname}"
+
+        # Why --force-renewal is not just a config toggle: certbot refuses to
+        # reissue a lineage that is not within 30 days of expiry, and it makes
+        # that decision on validity ALONE — it does not care that the cert on
+        # disk was issued by the staging CA and the run now asks for the real
+        # one. Rehearse with staging, flip the flag, re-run, and certbot says
+        # "not due for renewal" and leaves the untrusted certificate in place;
+        # the only way out was to run certbot by hand. So: read the issuer of
+        # whatever is already there, and force the reissue when it disagrees
+        # with what this run is asking for.
+        force = bool(acme.get("force_renewal"))
+        reason = "acme.force_renewal is set in the site config" if force else ""
+        r = conn.run(f"test -f {shlex.quote(live)}/fullchain.pem && "
+                     f"openssl x509 -noout -issuer -in {shlex.quote(live)}/fullchain.pem")
+        if r.ok and r.out:
+            # Let's Encrypt's staging intermediates carry "(STAGING)" in the
+            # issuer CN — e.g. "(STAGING) Wannabe Watercress R11".
+            existing_staging = "STAGING" in r.out.upper()
+            if existing_staging != staging:
+                force = True
+                reason = (f"existing certificate is {'staging' if existing_staging else 'production'}, "
+                          f"this run asks for {'staging' if staging else 'production'}")
+            ctx.record(node, "existing certbot lineage", True,
+                       f"{'staging' if existing_staging else 'production'} issuer"
+                       + (f" — forcing reissue ({reason})" if force else " — matches this run"),
+                       warn=force)
+        if force and reason:
+            ctx.record(node, "forcing certificate reissue", True, reason, warn=True)
+
         ctx.begin(node, "certbot --standalone", "binds :80 briefly")
         cmd = (f"certbot certonly --standalone --non-interactive --agree-tos "
               f"-m {shlex.quote(acme.get('email', ''))} "
               f"-d {shlex.quote(cfg.tls.hostname)} "
               f"--server {shlex.quote(acme.get('directory_url', ''))}{staging_flag} "
-              f"--cert-name {shlex.quote(cfg.tls.hostname)}")
+              f"--cert-name {shlex.quote(cfg.tls.hostname)}"
+              + (" --force-renewal" if force else ""))
         r = conn.run(cmd, timeout=180)
         ctx.record(node, "certbot issuance", r.ok,
                    r.err.splitlines()[-1] if (not r.ok and r.err) else "")
         if not r.ok:
             raise RuntimeError("certbot failed — see output above")
 
-        live = f"/etc/letsencrypt/live/{cfg.tls.hostname}"
         r = conn.run(f"cp {live}/fullchain.pem {live}/privkey.pem {shlex.quote(cert_dir)}/ && "
                      f"chmod 600 {shlex.quote(cert_dir)}/privkey.pem")
         ctx.record(node, "cert copied to authentik discovery folder", r.ok,

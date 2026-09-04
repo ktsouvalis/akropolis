@@ -58,6 +58,9 @@ PSQL = "sudo -u postgres psql -h /var/run/postgresql -p 5432 -v ON_ERROR_STOP=1"
 
 class RestorePhase(Phase):
     name = "restore"
+    # Declining this one skips it and moves on to handoff (see Phase.optional):
+    # an instance that starts empty is a valid outcome, not a failed run.
+    optional = True
 
     # ------------------------------------------------------------------ util
     def _rcfg(self, ctx: PhaseContext) -> dict:

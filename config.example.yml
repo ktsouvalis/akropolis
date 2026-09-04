@@ -145,8 +145,16 @@ tls:
 
   # acme:
   #   directory_url: https://acme-v02.api.letsencrypt.org/directory
-  #   email: <admin_email>
-  #   staging: true               # start true; flip after a clean end-to-end run
+  #   email: <admin_email>        # expiry and problem notices go here
+  #   staging: false              # true = Let's Encrypt staging: NOT browser-trusted.
+  #                               # Only for rehearsing issuance. Flipping it back to
+  #                               # false and re-running is enough — akropolis reads the
+  #                               # issuer of the certificate already on the node and
+  #                               # forces the reissue, because certbot on its own would
+  #                               # decline it as "not due for renewal" and leave the
+  #                               # staging certificate in place.
+  #   force_renewal: false        # force reissue unconditionally (rarely needed; the
+  #                               # staging<->production switch above is automatic)
   # import:
   #   fullchain: ./certs/fullchain.pem
   #   privkey:   ./certs/privkey.pem   # or privkey_prompt: true

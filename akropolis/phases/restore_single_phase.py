@@ -44,6 +44,7 @@ import shlex
 import time
 from pathlib import Path
 
+from .authentik_certs_phase import set_web_certificate
 from .authentik_phase import apply_brand, dump_logs, wait_healthy, wait_one_healthy
 from .base import Phase, PhaseContext
 
@@ -54,6 +55,9 @@ PSQL = "docker exec -i authentik-postgresql-1 psql -U authentik -v ON_ERROR_STOP
 
 class RestoreSinglePhase(Phase):
     name = "restore"
+    # Declining this one skips it and moves on to handoff (see Phase.optional):
+    # an instance that starts empty is a valid outcome, not a failed run.
+    optional = True
 
     # ------------------------------------------------------------------ util
     def _rcfg(self, ctx: PhaseContext) -> dict:
@@ -122,6 +126,12 @@ class RestoreSinglePhase(Phase):
             "dependency wait and would abort the up",
             "then the server, --no-deps (a plain up -d would restart the worker "
             "we just gated); container logs are printed automatically if a gate expires",
+            "re-mint the bootstrap API token into the restored database (via 'ak shell' "
+            "in the worker — the dump brought its own tokens and the env-file bootstrap "
+            "no longer applies once an akadmin exists)",
+            "re-apply branding and, for acme/import, the default brand's web_certificate "
+            "— both live in the database the dump just replaced, and a brand pointing at "
+            "a keypair that isn't here makes authentik serve its self-signed cert instead",
             "verify: restored DB has tables + users, server+worker healthy",
         ]
 
@@ -260,29 +270,102 @@ class RestoreSinglePhase(Phase):
             dump_logs(ctx, conn, "server")
             raise RuntimeError("node never became healthy on the restored database")
 
-        # Check the bootstrap token against the just-restored database BEFORE
-        # the branding re-apply below, which uses this same token to talk to
-        # the API — a dead token there would otherwise surface from inside
-        # apply_brand() as "could not find the default brand", which is
-        # misleading (the brand is fine; the token isn't valid anymore).
-        # verify() re-checks this for the operator-facing record; this copy
-        # only exists to gate whether apply_brand() is worth attempting.
+        # --- put back what DROP DATABASE took ---------------------------------
+        # Three things provisioned before this phase live IN the database, not
+        # in a config file, so the restore replaced all of them with whatever
+        # the dump's source instance had:
+        #
+        #   1. the bootstrap API token  — gone; the dump has the old instance's
+        #      tokens instead. AUTHENTIK_BOOTSTRAP_TOKEN in the env file does
+        #      not save us: authentik applies it when it creates akadmin, and
+        #      the restored database already contains an akadmin, so the
+        #      bootstrap is a no-op on the next worker start.
+        #   2. the default brand's branding (logo/favicon/title)
+        #   3. the default brand's web_certificate — and THIS is the one that
+        #      hurts. On single-node topology authentik's own webserver
+        #      terminates TLS using that column; with it pointing at a keypair
+        #      that does not exist here, the node quietly falls back to its
+        #      self-signed certificate and the result presents as "the
+        #      dashboard and the user list don't load properly", nowhere near
+        #      anything the operator would think to look at.
+        #
+        # So: re-mint the token through the ORM inside the worker container
+        # (the only path that does not need a working token to begin with),
+        # then redo 2 and 3 exactly as the earlier phases did.
         token = ctx.state.data["generated"].get("authentik_bootstrap_token", "")
-        tok_ok_now = True
-        if token:
-            r = conn.run(f"curl -sk -H {shlex.quote('Authorization: Bearer ' + token)} "
-                         "-o /dev/null -w '%{http_code}' "
-                         "https://127.0.0.1:443/api/v3/admin/version/", timeout=30)
-            tok_ok_now = r.out.strip() == "200"
+        tok_ok_now = self._token_alive(ctx, conn, token) if token else False
+        if token and not tok_ok_now:
+            tok_ok_now = self._remint_token(ctx, conn, token)
 
         branding = (ctx.cfg.raw.get("authentik") or {}).get("branding") or {}
-        if branding and token and not tok_ok_now:
-            ctx.record(node, "branding re-apply skipped", True,
-                       "bootstrap token is dead post-restore (not a missing brand) — "
-                       "get a fresh token and re-apply branding by hand, or "
-                       "--replay restore once state has a live one", warn=True)
-        elif branding and token:
+        if branding and tok_ok_now:
             apply_brand(ctx, conn, branding, token, port=443)
+        elif branding:
+            ctx.record(node, "branding re-apply skipped", True,
+                       "no working API token against the restored database — "
+                       "re-apply the branding by hand in System > Brands", warn=True)
+
+        # web_certificate: only meaningful when akropolis actually installed a
+        # certificate for authentik to serve (none/self_signed leave authentik
+        # on its own generated one, which is unaffected by the restore).
+        if ctx.cfg.tls.provider in ("acme", "import"):
+            if tok_ok_now:
+                set_web_certificate(ctx, conn, token, ctx.cfg.tls.hostname)
+            else:
+                ctx.record(node, "web certificate re-apply skipped", False,
+                           "the restored brand does not carry this node's certificate and "
+                           "there is no working API token to fix it — set System > Brands "
+                           "> Web Certificate to "
+                           f"{ctx.cfg.tls.hostname!r} by hand, or the node will serve its "
+                           "self-signed certificate", warn=True)
+
+    # ------------------------------------------------- post-restore recovery
+    def _token_alive(self, ctx: PhaseContext, conn, token: str) -> bool:
+        r = conn.run(f"curl -sk -H {shlex.quote('Authorization: Bearer ' + token)} "
+                     "-o /dev/null -w '%{http_code}' "
+                     "https://127.0.0.1:443/api/v3/admin/version/", timeout=30)
+        return r.out.strip() == "200"
+
+    def _remint_token(self, ctx: PhaseContext, conn, token: str) -> bool:
+        """Recreate the pinned bootstrap token inside the restored database.
+
+        Runs through `ak shell` in the worker container because that is the
+        one route that does not itself require an API token. Best-effort by
+        design: a failure here costs branding and the web certificate, both
+        of which the operator can set by hand, so it warns rather than
+        raising and taking a good restore down with it.
+        """
+        node = conn.node.name
+        py = (
+            "try:\n"
+            "    from authentik.core.models import Token, TokenIntents, User\n"
+            "except Exception as e:\n"
+            "    print('ERR import %s' % e); raise SystemExit(1)\n"
+            f"KEY = {token!r}\n"
+            "IDENT = 'akropolis-bootstrap'\n"
+            "u = User.objects.filter(username='akadmin').first() or \\\n"
+            "    User.objects.filter(is_active=True).order_by('pk').first()\n"
+            "if u is None:\n"
+            "    print('ERR no user in restored database'); raise SystemExit(1)\n"
+            "Token.objects.filter(key=KEY).exclude(identifier=IDENT).delete()\n"
+            "Token.objects.update_or_create(identifier=IDENT, defaults={\n"
+            "    'user': u, 'intent': TokenIntents.INTENT_API, 'key': KEY,\n"
+            "    'expiring': False, 'description': 'akropolis provisioning token'})\n"
+            "print('OK %s' % u.username)\n"
+        )
+        ctx.begin(node, "re-minting bootstrap token", "into the restored database")
+        r = conn.run("cd /opt/authentik && docker compose exec -T worker "
+                     f"ak shell -c {shlex.quote(py)}", timeout=180)
+        if not (r.ok and "OK " in r.out):
+            ctx.record(node, "bootstrap token re-minted", False,
+                       (r.out or r.err).splitlines()[-1] if (r.out or r.err) else "ak shell failed",
+                       warn=True)
+            return False
+        owner = r.out.rsplit("OK ", 1)[-1].strip()
+        ctx.record(node, "bootstrap token re-minted", True,
+                   f"attached to restored user {owner!r} — the token in state and in the "
+                   "monitor config keeps working")
+        return self._token_alive(ctx, conn, token)
 
     # ---------------------------------------------------------------- verify
     def verify(self, ctx: PhaseContext) -> bool:
@@ -315,11 +398,12 @@ class RestoreSinglePhase(Phase):
                          "-o /dev/null -w '%{http_code}' "
                          "https://127.0.0.1:443/api/v3/admin/version/", timeout=30)
             tok_ok = r.out.strip() == "200"
-            ctx.record(node, "bootstrap API token still valid", tok_ok,
+            ctx.record(node, "bootstrap API token valid against restored database", tok_ok,
                        f"HTTP {r.out}" if tok_ok else
-                       f"HTTP {r.out} — the restored database does not contain this "
-                       "token. Create a new one (akadmin > Directory > Tokens, admin "
-                       "scope) and put it in the monitor config", warn=not tok_ok)
+                       f"HTTP {r.out} — the restore replaced the database this token "
+                       "lived in and re-minting it through 'ak shell' did not take. "
+                       "Create one by hand (akadmin > Directory > Tokens, admin scope) "
+                       "and put it in the monitor config", warn=not tok_ok)
 
         good = wait_healthy(ctx, conn, timeout=60, label="verify: healthy gate")
         ctx.record(node, "verify: containers healthy", good, "")

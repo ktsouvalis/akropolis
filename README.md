@@ -246,7 +246,7 @@ Verify: both containers `healthy` on every node, `/-/health/ready/` answers per 
 
 ### restore *(optional)*
 
-The migration/cutover move, wired in as a phase between `authentik` and `handoff`: set `restore.sql_file` (plain `.sql` or `.sql.gz`) and the freshly-bootstrapped database is replaced by a `pg_dump` from the old system — real users, providers and flows instead of a blank akadmin install. Without `restore.sql_file` the phase records "skipped" and the pipeline runs through untouched.
+The migration/cutover move, wired in as a phase between `authentik` and `handoff`: set `restore.sql_file` (plain `.sql` or `.sql.gz`) and the freshly-bootstrapped database is replaced by a `pg_dump` from the old system — real users, providers and flows instead of a blank akadmin install. Without `restore.sql_file` the phase records "skipped" and the pipeline runs through untouched. Declining the confirmation prompt does the same thing: `restore` is an *optional* phase, so answering "no" records it as skipped and the runner moves on to `handoff` rather than stopping the pipeline one phase short of a finished site. Required phases still halt the run when declined.
 
 When enabled it is destructive by definition, so the order is strict and every step gated: locate the **current** Patroni leader via REST `/primary` (it may not be node-1 by now); check the dump's `SET <guc>` header against the target server's `pg_settings` **before anything destructive** — a dump written by a newer `pg_dump` carries GUCs an older server rejects (`pg_dump` 17 into PostgreSQL 16 emits `SET transaction_timeout = 0;`), and discovering that after the DROP would leave the cluster down on an empty database; those specific header lines are stripped at load time and nothing else is filtered, so `ON_ERROR_STOP` still governs the real content; stop authentik on **all** nodes before touching the database; SFTP the dump to the leader (the base64 push is unusable at dump sizes) and verify sha256 end-to-end; `DROP DATABASE ... WITH (FORCE)` → `CREATE ... OWNER authentik` → `psql -v ON_ERROR_STOP=1` — any error stops the phase with authentik deliberately still down, never half-up on half-data; delete the dump from the node (it contains every secret the IdP holds); then bring authentik back: the **worker starts alone** (`up -d --no-deps worker`) and is gated on `restore.migration_timeout` (default 3600s). This matters — a restored database is not a fresh one, and the worker migrating real data outlasts compose's own dependency wait (`start_period` 60s + `interval` 30s × `retries` 3 ≈ 150s), after which `docker compose up -d` aborts the whole thing with *dependency failed to start* while the migration is running perfectly well. The server follows once the worker is healthy, then the other nodes one at a time — their workers find a migrated schema and come up normally. Whenever a health gate expires, the tail of the relevant container log is printed automatically rather than telling you to go and fetch it. Verify proves the restored schema has tables, `authentik_core_user` is populated, and every node is healthy and ready. The dump's sha256 and timestamp land in state as the paper trail; at real cutover, re-run with the fresh dump via `--replay restore`.
 
@@ -330,7 +330,12 @@ depends on `tls.provider`: `none`/`self_signed` are a no-op — authentik
 already generates and serves its own self-signed certificate on first boot,
 so there's nothing to add; `acme` runs certbot in `--standalone` mode (port
 80 is free by construction) with a renewal deploy hook that re-copies the
-cert and restarts the worker on every future renewal; `import` validates the
+cert and restarts the worker on every future renewal — and, before issuing,
+reads the issuer of whatever certificate is already on the node, forcing the
+reissue when it disagrees with what this run asks for (rehearse against
+Let's Encrypt staging, set `acme.staging: false`, re-run, and certbot on its
+own would decline as *not due for renewal* and leave the untrusted
+certificate in place); `import` validates the
 provided cert on the workstation first (key↔cert match, SAN coverage,
 expiry — the same checks the HA `tls` phase runs) and pushes it to the node.
 Either way the cert lands in authentik's discovery folder, the worker is
@@ -354,9 +359,20 @@ deleted after) but is considerably simpler: no Patroni leader to locate
 exec`), and no ownership-normalisation step — the postgres container's only
 superuser IS the app role (`POSTGRES_USER=authentik`), so the HA phase's
 "restored objects owned by postgres, not the app role" trap (NOTES.md)
-cannot happen here. `clean` reuses the exact same `/opt/authentik` compose
-project as `authentik`, so `docker compose down -v` already drops the
-containerized postgres's named volume with it — a shorter step list than
+cannot happen here. A restore on this
+topology also has to put back what `DROP DATABASE` takes: the bootstrap API
+token, the default brand's branding, and — the one that actually bites — the
+brand's **Web Certificate**. On single-node, authentik's own webserver
+terminates TLS, and which certificate it presents is a column on the brand
+row, so the restored dump replaces it with the old instance's brand pointing
+at a keypair that does not exist here; the node then quietly falls back to
+its self-signed certificate. The phase re-mints the token through `ak shell`
+in the worker container (the only route that doesn't already need a working
+token — `AUTHENTIK_BOOTSTRAP_TOKEN` no longer applies once the restored
+database contains an `akadmin`) and re-applies the other two. `clean` reuses
+the exact same `/opt/authentik` compose project as `authentik`, so
+`docker compose down -v` already drops the containerized postgres's named
+volume with it — a shorter step list than
 `ha`'s, since there's no keepalived/haproxy/patroni/etcd to have ever
 existed, and `/etc/letsencrypt` already covers both topologies' certbot
 material without a separate step.

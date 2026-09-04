@@ -86,6 +86,14 @@ class PhaseContext:
 class Phase(ABC):
     name: str = "unnamed"
     read_only: bool = False
+    # OPTIONAL phases are the ones the pipeline can legitimately run without:
+    # declining them is a choice, not an abort. Saying "no" to `restore`
+    # means "this instance starts empty" — the correct next move is the
+    # handoff, not stopping two phases short of a finished site and leaving
+    # the operator to work out which --only invocation resumes it. A
+    # REQUIRED phase declined still stops the runner: skipping etcd and
+    # carrying on would build on a foundation that isn't there.
+    optional: bool = False
 
     @abstractmethod
     def plan(self, ctx: PhaseContext) -> list[str]:
@@ -145,6 +153,11 @@ def run_phases(phases: list[Phase], ctx: PhaseContext, replay: bool = False) -> 
             console.print(f"  • {line}")
 
         if not _confirm(ctx.cfg, phase, ctx):
+            if phase.optional:
+                console.print(f"[yellow]not confirmed — skipping optional phase "
+                              f"'{phase.name}' and continuing.[/yellow]")
+                ctx.state.mark_phase(phase.name, "skipped")
+                continue
             console.print("[yellow]not confirmed — stopping.[/yellow]")
             ctx.state.mark_phase(phase.name, "declined")
             return False

@@ -79,12 +79,21 @@ class BasePhase(Phase):
                    "--force enable (no inter-node rule, no monitor punch-through — single host, "
                    "nothing beyond the public 80/443 for a monitor to reach)")
         lines = [
-            f"set hostname on each node ({', '.join(n.name for n in cfg.nodes)})",
+            f"set hostname on each node ({', '.join(n.name for n in cfg.nodes)})"
+            if cfg.topology == "ha" else f"set the hostname to {cfg.nodes[0].name}",
         ]
         if cfg.topology == "ha":
             lines.append("manage an akropolis-marked block in /etc/hosts with all node entries")
+        # chrony is installed on both topologies but only called out here for
+        # HA, where clock skew is a cluster-correctness issue (Patroni leader
+        # leases, etcd terms) the operator has to care about. On a single node
+        # it still matters — TOTP validation and certificate notBefore/notAfter
+        # both depend on the clock — but it is ordinary host hygiene, not a
+        # decision, so it stays in the package list and in verify() instead of
+        # taking up a line in a plan the operator is being asked to approve.
         lines += [
-            f"apt update{' && apt upgrade' if upgrade else ''} && install baseline packages + chrony",
+            f"apt update{' && apt upgrade' if upgrade else ''} && install baseline packages"
+            + (" + chrony" if cfg.topology == "ha" else ""),
             "install Docker CE from download.docker.com (keyring + repo + packages)",
             ufw_base,
         ]
@@ -125,7 +134,9 @@ class BasePhase(Phase):
             ctx.record(node, "apt update" + ("+upgrade" if upgrade else ""), r.ok,
                        r.err.splitlines()[-1] if (not r.ok and r.err) else "")
 
-            ctx.begin(node, "installing baseline packages", "chrony, jq, pg client deps, ...")
+            ctx.begin(node, "installing baseline packages",
+                      "chrony, jq, pg client deps, ..." if cfg.topology == "ha"
+                      else "jq, pg client deps, ...")
             r = conn.run(f"{APT} install {PACKAGES}", timeout=900)
             ctx.record(node, "baseline packages", r.ok,
                        r.err.splitlines()[-1] if (not r.ok and r.err) else "")

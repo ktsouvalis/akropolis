@@ -10,6 +10,102 @@ when it was fixed.
 
 ---
 
+## `acme.staging: true` is a one-way door without `--force-renewal` (Sep 2026)
+
+The wizard used to hardcode `staging: true` on the reasoning that a first run
+should not spend real rate limit. The consequence was worse than the problem:
+the node came up with a Let's Encrypt **staging** certificate, which no
+browser trusts, and setting `staging: false` and re-running did **not**
+replace it. certbot decides whether to reissue on remaining validity alone —
+the lineage had ~89 days left, so it reported *not due for renewal* and left
+the staging certificate exactly where it was. The only way out was running
+certbot by hand with `--force-renewal`.
+
+Two fixes, both needed:
+
+1. `acme.staging` is a real question in the wizard now, defaulting to the
+   production directory. Rehearsing is a choice, not the default.
+2. Before issuing, the `certs` phase reads the issuer of any certificate
+   already at `/etc/letsencrypt/live/<hostname>/` (Let's Encrypt's staging
+   intermediates carry `(STAGING)` in the issuer CN) and adds
+   `--force-renewal` when it disagrees with what the run is asking for.
+   `acme.force_renewal: true` forces it unconditionally.
+
+Rule: whenever a phase is idempotent by asking an external tool "is this
+already done?", check that the tool's notion of *done* is the same as ours.
+certbot's was "still valid", ours was "issued by the right CA".
+
+---
+
+## `DROP DATABASE` takes provisioning state with it (Sep 2026)
+
+A single-node restore finished with every check green — 230 tables, 1317
+users, containers healthy, `/-/health/ready/` 200 — and the UI was broken:
+the dashboard and user list would not load properly. Nothing in the restore
+was wrong. The problem is that three things provisioned by earlier phases
+live *in the database*, so the dump replaced all of them with the source
+instance's versions:
+
+1. the bootstrap API token — the restored database has the old instance's
+   tokens instead. `AUTHENTIK_BOOTSTRAP_TOKEN` in the env file does not
+   recover it: authentik applies that when it *creates* `akadmin`, and the
+   restored database already has one, so the next worker start is a no-op.
+2. the default brand's branding (logo/favicon/title).
+3. the default brand's `web_certificate` — the damaging one. On single-node
+   topology authentik's own webserver terminates TLS and that column decides
+   which keypair it presents. Restored, it points at a keypair that does not
+   exist here, and the node silently falls back to its self-signed
+   certificate.
+
+The phase now re-mints the token via `ak shell` inside the worker container
+(the only path that does not itself require a working token), then re-applies
+branding and the web certificate. Best-effort: a failure warns and names the
+manual fix rather than failing a restore that otherwise worked.
+
+Rule: a phase that replaces the database must inventory what earlier phases
+wrote *into* it, not just what they wrote to disk. Green health checks prove
+the service is up, not that it is configured.
+
+---
+
+## Sudo failing mid-phase (Sep 2026)
+
+A wrong sudo password first surfaced three checks into the `restore` phase,
+at the `docker compose stop server worker` step — immediately before the
+destructive part, and after the run had already reported progress. Nothing
+was damaged (the phase refuses to touch the database with clients up), but
+the operator is left reconstructing how far it got.
+
+`provision` and `clean` now prove sudo works on every node before the first
+phase runs, with up to three attempts at the password. Preflight already did
+this, but `--only`/`--replay` skip preflight entirely, which is exactly when
+a destructive phase runs alone.
+
+Rule: credentials are validated at the top of the run, not wherever they
+happen to be needed first.
+
+---
+
+## Single-node was answering HA's questions (Sep 2026)
+
+`akropolis init` asked for a network interface and an expected MTU on
+`single` topology, and preflight then checked them. Neither value is read by
+any single-node phase: the interface is what keepalived binds the VIP to, and
+the MTU is what has to survive between nodes for VRRP/etcd/Patroni. A single
+node has neither, so the questions produced answers nothing consulted and a
+preflight check that could fail a perfectly good host over a number that did
+not matter. Both are HA-only now, and the emitted config has no `network`
+section at all for `single`.
+
+chrony stays installed on both — on a single node it is still what keeps TOTP
+validation and certificate `notBefore`/`notAfter` honest — but it is no longer
+called out in the plan the operator approves, because it is host hygiene
+rather than a decision.
+
+Rule: a question worth asking is one whose answer changes something.
+
+---
+
 ## pg_dump version skew on restore (Sep 2026)
 
 First real run of the `restore` phase failed with `ERROR: unrecognized

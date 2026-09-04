@@ -58,10 +58,17 @@ class PreflightPhase(Phase):
     def plan(self, ctx: PhaseContext) -> list[str]:
         cfg = ctx.cfg
         ports = REQUIRED_FREE_PORTS if cfg.topology == "ha" else REQUIRED_FREE_PORTS_SINGLE
+        # interface + MTU are HA-only concerns: the interface name is what
+        # keepalived binds the VIP to and the MTU is what VRRP/etcd/Patroni
+        # traffic has to cross intact between nodes. A single node has no
+        # keepalived and no inter-node traffic at all, so checking either one
+        # asks a question whose answer changes nothing — see the wizard,
+        # which no longer collects them for this topology.
         lines = [
             f"SSH to {len(cfg.nodes)} node(s) as {cfg.ssh.user!r} (auth: {cfg.ssh.auth}) and run read-only checks:",
-            "reachability + sudo, OS release, interface "
-            f"{cfg.network.interface!r} exists with MTU {cfg.network.expected_mtu}",
+            ("reachability + sudo, OS release, interface "
+             f"{cfg.network.interface!r} exists with MTU {cfg.network.expected_mtu}")
+            if cfg.topology == "ha" else "reachability + sudo, OS release",
             f"≥ 20 GB free on /",
             f"required ports free: {', '.join(map(str, ports))}",
         ]
@@ -125,14 +132,15 @@ class PreflightPhase(Phase):
             expected = "ubuntu 24.04"
             ctx.record(node, "os release", r.out == expected, r.out or r.err, warn=(r.out != expected))
 
-            # 3. interface + MTU
-            r = conn.run(f"cat /sys/class/net/{cfg.network.interface}/mtu 2>/dev/null")
-            if not r.ok or not r.out:
-                ctx.record(node, f"interface {cfg.network.interface}", False, "interface not found")
-            else:
-                mtu = int(r.out)
-                ctx.record(node, f"MTU on {cfg.network.interface}", mtu == cfg.network.expected_mtu,
-                           f"{mtu} (expected {cfg.network.expected_mtu})")
+            # 3. interface + MTU — HA only (see plan())
+            if cfg.topology == "ha":
+                r = conn.run(f"cat /sys/class/net/{cfg.network.interface}/mtu 2>/dev/null")
+                if not r.ok or not r.out:
+                    ctx.record(node, f"interface {cfg.network.interface}", False, "interface not found")
+                else:
+                    mtu = int(r.out)
+                    ctx.record(node, f"MTU on {cfg.network.interface}", mtu == cfg.network.expected_mtu,
+                               f"{mtu} (expected {cfg.network.expected_mtu})")
 
             # 4. clock — store the OFFSET from our own clock at the moment of
             # sampling, so sequential collection time cancels out and only
@@ -193,7 +201,12 @@ class PreflightPhase(Phase):
                            "; ".join(artifacts) if artifacts else "clean host",
                            warn=(bool(artifacts) and midlife))
 
-            # 8. inter-node MTU path (DF bit; payload = mtu - 28 for IPv4+ICMP headers)
+            # 8. inter-node MTU path (DF bit; payload = mtu - 28 for IPv4+ICMP
+            # headers) — HA only. One node has no peer to reach, so the loop
+            # below is already empty on single; the guard says so out loud
+            # rather than leaving it as an accident of node count.
+            if cfg.topology != "ha":
+                continue
             payload = cfg.network.expected_mtu - 28
             for other in ctx.fleet:
                 if other.node.name == node:

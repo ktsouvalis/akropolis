@@ -82,6 +82,45 @@ def _transcript_path(cfg: SiteConfig, command: str) -> Path:
     return cfg.state_file.parent / f"{cfg.name}.{command}.{ts}.transcript.log"
 
 
+def _preauth_sudo(cfg: SiteConfig, fleet: Fleet, password: str | None) -> bool:
+    """Prove sudo works on every node BEFORE the first phase runs.
+
+    Without this the credential is first exercised wherever a phase happens
+    to need root — which, for `restore`, is the `docker compose stop server
+    worker` step, three checks deep and immediately before the destructive
+    part. A mistyped password there aborts a run that had already reported
+    progress, and the operator has to work out how much of it happened. Three
+    attempts, then give up: better to re-run the command than to sit at a
+    prompt an automated invocation can never answer.
+    """
+    if not cfg.ssh.become:
+        return True
+    for attempt in range(3):
+        bad: list[str] = []
+        for conn in fleet:
+            try:
+                conn.connect()
+            except Exception as exc:  # noqa: BLE001
+                console.print(f"[red]cannot reach {conn.node.name} ({conn.node.ip}):[/red] {exc}")
+                return False
+            if conn.run("id -u").out == "0":
+                continue  # already root, nothing to escalate
+            if not conn.run("true", sudo=True).ok:
+                bad.append(conn.node.name)
+        if not bad:
+            return True
+        console.print(f"[yellow]sudo failed on: {', '.join(bad)}[/yellow]")
+        if attempt == 2:
+            console.print("[red]sudo authentication failed three times — stopping before "
+                          "any phase runs.[/red]")
+            return False
+        hint = "Enter = reuse SSH password" if password else "Enter = try passwordless sudo"
+        retry = getpass.getpass(f"sudo password for {cfg.ssh.user} ({hint}): ") or password
+        for conn in fleet:
+            conn._sudo_password = retry
+    return False
+
+
 def cmd_init(args: argparse.Namespace) -> int:
     run_wizard(args.output)
     return 0
@@ -113,6 +152,10 @@ def cmd_provision(args: argparse.Namespace) -> int:
             f"sudo password for {cfg.ssh.user} ({hint}): ") or password
 
     fleet = Fleet(cfg.nodes, cfg.ssh, password, sudo_password, transcript=transcript)
+    if not _preauth_sudo(cfg, fleet, password):
+        fleet.close()
+        transcript.close()
+        return 2
     ctx = PhaseContext(cfg=cfg, state=state, fleet=fleet)
 
     if args.replay:
@@ -167,6 +210,10 @@ def cmd_clean(args: argparse.Namespace) -> int:
             f"sudo password for {cfg.ssh.user} ({hint}): ") or password
 
     fleet = Fleet(cfg.nodes, cfg.ssh, password, sudo_password, transcript=transcript)
+    if not _preauth_sudo(cfg, fleet, password):
+        fleet.close()
+        transcript.close()
+        return 2
     ctx = PhaseContext(cfg=cfg, state=state, fleet=fleet)
     phase = CleanPhase()
     fleet.current_phase = phase.name
