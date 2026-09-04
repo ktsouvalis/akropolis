@@ -200,6 +200,35 @@ replacement under a running Patroni).
 does not mention, so this cannot silently recur.
 
 
+## Single-node topology: worker squats the server's 443, fatally (Sep 2026)
+
+Found on a real run: `authentik-server-1` crash-looped forever — "Up Less
+than a second (health: starting)" on repeat — while the worker sat healthy.
+`docker logs authentik-server-1` showed the arbiter shutting itself down
+gracefully about 0.3s after "starting tls watcher", no explicit error in the
+visible tail.
+
+Cause: the worker's environment overrides AUTHENTIK_LISTEN__HTTP and
+AUTHENTIK_LISTEN__METRICS but not AUTHENTIK_LISTEN__HTTPS, so it inherits
+443 from the shared .env — the exact same class of bug already documented
+for the HA cluster's worker (config.example.yml: "listen ports pinned off
+HAProxy's 9000"), which squats the server's HTTP/metrics ports by starting
+first under network_mode: host. The HA case is non-fatal — the Go router's
+binds fail silently and requests land on the worker's liveness endpoint
+instead. This one crashes the whole arbiter: a failed TLS bind is
+apparently fatal in a way a failed plain-HTTP bind isn't, and 443 is the
+server's ONLY listener on single-node (there's no separate 9443-vs-443
+split the way HA has). Fix: give the worker its own HTTPS port too — 9444,
+otherwise unused.
+
+The HA cluster's worker has the identical gap (no AUTHENTIK_LISTEN__HTTPS
+override), just masked by the non-fatal failure mode. Left unfixed there
+for now — this patch is scoped to the actual crash, and touching the
+already-deployed HA compose template deserves its own look rather than a
+same-day tag-along fix. Worth doing before it becomes a live incident there
+too, not just a documented oddity.
+
+
 ## Single-node topology: the init wizard never knew it existed (Sep 2026)
 
 Real gap, found the way these are always found: an operator ran `akropolis

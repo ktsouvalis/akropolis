@@ -57,7 +57,13 @@ services:
     environment:
       # Same reasoning as the HA cluster's worker: under network_mode: host
       # it would otherwise squat the server's 9080/9300 by starting first.
+      # HTTPS needs the same override here that the HA cluster's worker is
+      # missing (see NOTES.md) — there it fails silently on a non-fatal
+      # HTTP-only bind; here it inherits 443 from the shared .env, and a
+      # failed TLS bind is fatal to the Rust arbiter, crash-looping the
+      # server. Point the worker's HTTPS at an unused port instead.
       AUTHENTIK_LISTEN__HTTP: 0.0.0.0:9081
+      AUTHENTIK_LISTEN__HTTPS: 0.0.0.0:9444
       AUTHENTIK_LISTEN__METRICS: 0.0.0.0:9301
     healthcheck:
       test: ["CMD", "python3", "-c", "import urllib.request,sys; sys.exit(0) if urllib.request.urlopen('http://localhost:9081/-/health/live/', timeout=5).status == 200 else sys.exit(1)"]

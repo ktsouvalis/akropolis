@@ -289,11 +289,13 @@ it to `single` changes the shape of the pipeline, not just its size:
   NOTES.md); `single` defaults to `2026.8.1`, since a single node has no
   multi-node outpost topology to trigger that bug. Set `authentik.tag`
   explicitly to override either default.
-- **Required free ports** drop to `80, 443, 9080, 9081, 9300, 9301` — no
-  etcd/Patroni/HAProxy ports (PostgreSQL never leaves the internal Docker
+- **Required free ports** drop to `80, 443, 9080, 9081, 9300, 9301, 9444` —
+  no etcd/Patroni/HAProxy ports (PostgreSQL never leaves the internal Docker
   network), and 9443 becomes plain 443. Port 80 stays free by construction —
   nothing akropolis renders binds it — so certbot can use it in standalone
-  mode for ACME issuance and renewal.
+  mode for ACME issuance and renewal. 9444 is the worker's own HTTPS
+  listener — without it, it inherits and squats the server's 443 by
+  starting first, which is fatal here (see NOTES.md).
 
 Intended use: a fallback instance to bring up quickly if the HA cluster is
 down, not a smaller HA cluster. `preflight`, `base`, `authentik`, and `certs`

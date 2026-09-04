@@ -29,7 +29,7 @@ PHASE_PORTS: dict[str, dict[str, set[int]]] = {
         "authentik": {9080, 9081, 9300, 9301, 9443},
     },
     "single": {
-        "authentik": {443, 9080, 9081, 9300, 9301},
+        "authentik": {443, 9080, 9081, 9300, 9301, 9444},
         # certs: no new port footprint — it only places files and restarts
         # the worker container that authentik already started.
     },

@@ -34,8 +34,12 @@ REQUIRED_FREE_PORTS = [80, 443, 2379, 2380, 5432, 5000, 5001, 8008, 9000, 9080, 
 # since the target deployment is reached by NAT with no port translation, so
 # whatever the node listens on IS what the public sees). Server HTTPS moves
 # 9443 -> 443; 80 stays free for certbot's standalone ACME challenge, not
-# bound by anything akropolis itself renders.
-REQUIRED_FREE_PORTS_SINGLE = [80, 443, 9080, 9081, 9300, 9301]
+# bound by anything akropolis itself renders. 9444 is the worker's own
+# HTTPS listener — under network_mode: host it would otherwise inherit and
+# squat the server's 443 by starting first, which is fatal here (a failed
+# TLS bind crashes the Rust arbiter), not the silent HTTP-only misroute the
+# HA cluster's worker causes on 9080 — see NOTES.md.
+REQUIRED_FREE_PORTS_SINGLE = [80, 443, 9080, 9081, 9300, 9301, 9444]
 
 
 class ConfigError(Exception):
