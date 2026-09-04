@@ -1,0 +1,63 @@
+# ============================================================
+#  Authentik Single-Node Monitor — Site Configuration
+#  Emitted by akropolis handoff for site: {{ site_name }}
+#  Generated {{ generated_at }} — hand-edits survive until the next handoff run.
+# ============================================================
+
+site_name: "{{ site_title }}"
+topology: "single"
+
+unicode_bullets: true
+refresh_interval: 20
+http_timeout: 5
+
+nodes:
+  authentik:
+    - ip: "{{ node.ip }}"
+      name: "{{ node.name }}"
+
+ports:
+  # authentik's own core webserver — no nginx in front on single-node, so
+  # this is the port the public actually hits (see akropolis NOTES.md).
+  authentik: {{ authentik_port }}
+  # Authentik WORKER liveness — a SEPARATE port (9081), never {{ authentik_port }}:
+  # the worker binds its own HTTP listener so it does not squat the server's.
+  authentik_worker: 9081
+
+scheme:
+  authentik: "https"                   # server health is HTTPS on {{ authentik_port }}
+  authentik_worker: "http"             # worker liveness is plain HTTP on 9081
+  # self-signed (the default, and what 'none'/'self_signed' both mean here)
+  # must not be verified; only a real cert (acme/import) can be.
+  verify_tls: {{ 'true' if verify_tls else 'false' }}
+
+ssh:
+  username: "{{ ssh_user }}"
+  key_file: "{{ ssh_key_file }}"
+
+# Services to collect logs from.
+# type: "docker" (container name) or "systemd" (unit name)
+# nodes: key from the nodes section above that lists the target host(s)
+services:
+  - label: "Auth Server"
+    nodes: authentik
+    type: docker
+    container: "authentik-server-1"
+  - label: "Auth Worker"
+    nodes: authentik
+    type: docker
+    container: "authentik-worker-1"
+  - label: "PostgreSQL"
+    nodes: authentik
+    type: docker
+    container: "authentik-postgresql-1"
+
+authentik:
+  url: "{{ authentik_url }}"
+
+credentials:
+  authentik_api_token: "{{ api_token }}"
+{% if cert_expiry %}
+
+# NOTE: tls provider 'import' has no auto-renewal — certificate expires {{ cert_expiry }}.
+{% endif %}

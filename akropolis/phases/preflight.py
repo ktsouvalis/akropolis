@@ -46,7 +46,7 @@ PHASE_CONTAINERS: dict[str, str] = {
 # complain about.
 PHASES_BY_TOPOLOGY: dict[str, tuple[str, ...]] = {
     "ha": ("base", "etcd", "patroni", "haproxy", "nginx-keepalived", "authentik", "handoff"),
-    "single": ("base", "authentik", "certs"),
+    "single": ("base", "authentik", "certs", "handoff"),
 }
 
 

@@ -22,6 +22,7 @@ from .phases.base import PhaseContext, run_phases
 from .phases.authentik_phase import AuthentikPhase
 from .phases.authentik_single_phase import AuthentikSinglePhase
 from .phases.authentik_certs_phase import AuthentikCertsPhase
+from .phases.handoff_single_phase import HandoffSinglePhase
 from .phases.base_setup import BasePhase
 from .phases.clean_phase import CleanPhase
 from .phases.etcd_phase import EtcdPhase
@@ -63,6 +64,7 @@ PIPELINE_SINGLE = [
     BasePhase(),
     AuthentikSinglePhase(),
     AuthentikCertsPhase(),
+    HandoffSinglePhase(),
 ]
 
 

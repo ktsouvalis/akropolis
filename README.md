@@ -39,7 +39,7 @@ No Redis: Authentik ≥ 2025.10 keeps sessions, cache, tasks, and WebSocket stat
 | restore | ✅ implemented (optional — skipped unless `restore.sql_file` is set) |
 | handoff | ✅ implemented, tested (emits the real ak-monitor schema) |
 | `akropolis monitor` | 🚧 stub (will fold in ak-monitor) |
-| `site.topology: single` | 🚧 in progress — preflight, base, authentik (postgres-in-container), certs (authentik's own Web Certificate, no nginx) done; restore, handoff, clean next |
+| `site.topology: single` | 🚧 in progress — preflight, base, authentik (postgres-in-container), certs (authentik's own Web Certificate, no nginx), handoff done; restore, clean next |
 
 **The 3-node HA provisioning pipeline is complete** — every phase from preflight to handoff is implemented. First full run against real VMs is the remaining milestone. A single-node topology (no VIP, PostgreSQL as a plain container, intended as a production-fallback instance) is being scaffolded alongside it — see `site.topology` in the configuration reference.
 
@@ -319,8 +319,15 @@ Either way the cert lands in authentik's discovery folder, the worker is
 restarted so discovery runs immediately, and the default brand's Web
 Certificate is set to the result.
 
-Still missing: a single-node `restore`, `handoff`, and a single-node-aware
-`clean`.
+Still missing: a single-node `restore` and a single-node-aware `clean`.
+`handoff` is done — same job as the HA version (emit the monitor config,
+print the landing card), much smaller by construction: no VIP, no
+keepalived priorities, no HAProxy/postgres credentials to hand out
+(PostgreSQL never leaves the loopback interface, so a remote monitor
+couldn't use those credentials anyway). The admin URL falls back to the
+node's own IP when `tls.hostname` isn't set — single-node has no VIP for
+`ha`'s `tls: none` to fall back to, and authentik always answers HTTPS
+here regardless of provider, so an empty URL was the alternative.
 
 ## Cleaning a site
 

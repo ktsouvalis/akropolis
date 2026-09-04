@@ -200,6 +200,37 @@ replacement under a running Patroni).
 does not mention, so this cannot silently recur.
 
 
+## Single-node topology: handoff phase, and a stale monitor port (Sep 2026)
+
+Two things, found while wiring up the handoff phase.
+
+First, a latent bug from the 9443→443 port change two entries above: the
+`base` phase's `MONITOR_PORTS_SINGLE` was still `"9443"` — a port nothing
+listens on anymore. Worse, it was solving a problem that no longer exists:
+443 is already public via the base allow-80/443 rule, so a monitor host
+never needed a special punch-through for it in the first place. Removed the
+whole monitor.ip prompt/rule for single topology rather than just fixing the
+port number — there is nothing left on this topology that a monitor needs
+UFW's help to reach.
+
+Second, writing a test config without `tls.hostname` set (valid — it's only
+required for acme/import) surfaced an empty `admin URL: https://` on the
+landing card. The HA handoff phase has a fallback for exactly this case —
+`tls: none` prints `http://{vip}` — but single-node has no VIP to fall back
+to, and unlike HA, authentik here always answers HTTPS regardless of
+provider (self-signed by default), so the fallback needed to be the node's
+own IP instead: `https://{hostname or node.ip}`. Caught by actually running
+`apply()` + `verify()` against a fake context before calling the phase done,
+not by reading the code — worth remembering as a case for actually dry-running
+new phases rather than trusting the plan()/apply() text alone.
+
+New handoff_single_phase.py otherwise mirrors the HA one closely: same
+plan → emit config → landing card → verify shape, much smaller by
+construction (no VIP, no keepalived priorities, no HAProxy/postgres
+credentials — PostgreSQL never leaves the loopback interface, so a remote
+monitor couldn't use those credentials even if handed them).
+
+
 ## Single-node topology: no nginx after all — authentik serves TLS directly (Sep 2026)
 
 Revised the previous entry's plan before writing the `nginx` phase it
