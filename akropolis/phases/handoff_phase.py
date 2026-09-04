@@ -98,6 +98,11 @@ class HandoffPhase(Phase):
         console.print(f"  password  : [bold]{gen.get('authentik_bootstrap_password', '?')}[/bold] "
                       "[yellow](shown once — change it after first login)[/yellow]")
         console.print(f"  monitor   : run your monitoring tool with [bold]{out}[/bold]")
+        transcript = getattr(ctx.fleet, "transcript", None)
+        if transcript is not None:
+            console.print(f"  transcript: [bold]{transcript.path}[/bold] (every command "
+                          "run on every node this session, secrets best-effort "
+                          "redacted — mode 0600)")
         mon_ip = str(((cfg.raw.get("monitor") or {}).get("ip") or "")).strip() \
             or gen.get("monitor_ip", "")
         if mon_ip:

@@ -12,12 +12,15 @@ from __future__ import annotations
 import argparse
 import getpass
 import sys
+import time
+from pathlib import Path
 
 from rich.console import Console
 
 from . import __version__
-from .config import ConfigError, load
+from .config import ConfigError, SiteConfig, load
 from .init_wizard import run_wizard
+from .transcript import Transcript
 from .phases.base import PhaseContext, run_phases
 from .phases.authentik_phase import AuthentikPhase
 from .phases.authentik_single_phase import AuthentikSinglePhase
@@ -74,6 +77,11 @@ def pipeline_for(topology: str) -> list:
     return PIPELINE_SINGLE if topology == "single" else PIPELINE_HA
 
 
+def _transcript_path(cfg: SiteConfig, command: str) -> Path:
+    ts = time.strftime("%Y%m%dT%H%M%S")
+    return cfg.state_file.parent / f"{cfg.name}.{command}.{ts}.transcript.log"
+
+
 def cmd_init(args: argparse.Namespace) -> int:
     run_wizard(args.output)
     return 0
@@ -89,6 +97,9 @@ def cmd_provision(args: argparse.Namespace) -> int:
         return 2
 
     state = State(cfg.state_file, cfg.name)
+    transcript = Transcript(_transcript_path(cfg, "provision"))
+    console.print(f"[dim]transcript: {transcript.path} "
+                  "(every command run on every node this session — mode 0600)[/dim]")
 
     password = None
     if cfg.ssh.auth == "password":
@@ -101,7 +112,7 @@ def cmd_provision(args: argparse.Namespace) -> int:
         sudo_password = getpass.getpass(
             f"sudo password for {cfg.ssh.user} ({hint}): ") or password
 
-    fleet = Fleet(cfg.nodes, cfg.ssh, password, sudo_password)
+    fleet = Fleet(cfg.nodes, cfg.ssh, password, sudo_password, transcript=transcript)
     ctx = PhaseContext(cfg=cfg, state=state, fleet=fleet)
 
     if args.replay:
@@ -123,6 +134,7 @@ def cmd_provision(args: argparse.Namespace) -> int:
         ok = run_phases(phases, ctx, replay=bool(args.only))
     finally:
         fleet.close()
+        transcript.close()
     return 0 if ok else 1
 
 
@@ -141,6 +153,9 @@ def cmd_clean(args: argparse.Namespace) -> int:
         return 2
 
     state = State(cfg.state_file, cfg.name)
+    transcript = Transcript(_transcript_path(cfg, "clean"))
+    console.print(f"[dim]transcript: {transcript.path} "
+                  "(every command run on every node this session — mode 0600)[/dim]")
     password = None
     if cfg.ssh.auth == "password":
         password = getpass.getpass(f"SSH password for {cfg.ssh.user}: ")
@@ -151,9 +166,11 @@ def cmd_clean(args: argparse.Namespace) -> int:
         sudo_password = getpass.getpass(
             f"sudo password for {cfg.ssh.user} ({hint}): ") or password
 
-    fleet = Fleet(cfg.nodes, cfg.ssh, password, sudo_password)
+    fleet = Fleet(cfg.nodes, cfg.ssh, password, sudo_password, transcript=transcript)
     ctx = PhaseContext(cfg=cfg, state=state, fleet=fleet)
     phase = CleanPhase()
+    fleet.current_phase = phase.name
+    transcript.note(f"phase: {phase.name}")
 
     console.rule("clean")
     console.print("[bold]plan:[/bold]")
@@ -164,6 +181,7 @@ def cmd_clean(args: argparse.Namespace) -> int:
     if input("> ").strip() != cfg.name:
         console.print("[yellow]not confirmed — nothing touched.[/yellow]")
         fleet.close()
+        transcript.close()
         return 1
 
     try:
@@ -172,6 +190,7 @@ def cmd_clean(args: argparse.Namespace) -> int:
     finally:
         ctx.end_status()
         fleet.close()
+        transcript.close()
     return 0 if ok else 1
 
 

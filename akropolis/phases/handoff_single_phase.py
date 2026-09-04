@@ -78,6 +78,11 @@ class HandoffSinglePhase(Phase):
         console.print(f"  password  : [bold]{gen.get('authentik_bootstrap_password', '?')}[/bold] "
                       "[yellow](shown once — change it after first login)[/yellow]")
         console.print(f"  monitor   : run your monitoring tool with [bold]{out}[/bold]")
+        transcript = getattr(ctx.fleet, "transcript", None)
+        if transcript is not None:
+            console.print(f"  transcript: [bold]{transcript.path}[/bold] (every command "
+                          "run on this node this session, secrets best-effort "
+                          "redacted — mode 0600)")
         if not cfg.ssh.key_file:
             console.print("  [yellow]NOTE: ssh.key_file was not set in the site config — "
                           f"edit [bold]{out}[/bold] and replace the CHANGE_ME placeholder "

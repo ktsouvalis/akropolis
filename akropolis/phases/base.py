@@ -134,6 +134,12 @@ def run_phases(phases: list[Phase], ctx: PhaseContext, replay: bool = False) -> 
         console.rule(f"phase: {phase.name}")
         ctx.checks.clear()
 
+        if hasattr(ctx.fleet, "current_phase"):
+            ctx.fleet.current_phase = phase.name
+        transcript = getattr(ctx.fleet, "transcript", None)
+        if transcript is not None:
+            transcript.note(f"phase: {phase.name}")
+
         console.print("[bold]plan:[/bold]")
         for line in phase.plan(ctx):
             console.print(f"  • {line}")

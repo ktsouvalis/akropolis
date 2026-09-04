@@ -34,6 +34,7 @@ class NodeConn:
         self._password = password
         self._sudo_password = sudo_password
         self._client: paramiko.SSHClient | None = None
+        self._fleet: "Fleet | None" = None  # set by Fleet.__init__; reaches its transcript
 
     def connect(self, timeout: float = 10.0) -> None:
         client = paramiko.SSHClient()
@@ -83,7 +84,11 @@ class NodeConn:
         out = stdout.read().decode(errors="replace")
         err = stderr.read().decode(errors="replace")
         rc = stdout.channel.recv_exit_status()
-        return Result(rc=rc, out=out.strip(), err=err.strip())
+        result = Result(rc=rc, out=out.strip(), err=err.strip())
+        if self._fleet is not None and self._fleet.transcript is not None:
+            self._fleet.transcript.record(self.node.name, self._fleet.current_phase,
+                                          cmd, result.rc, result.out, result.err)
+        return result
 
     def put(self, local_path: str, remote_path: str, callback=None) -> None:
         """SFTP upload — for payloads too large for the base64 push_file pipe
@@ -96,14 +101,21 @@ class NodeConn:
             sftp.put(local_path, remote_path, callback=callback)
         finally:
             sftp.close()
+        if self._fleet is not None and self._fleet.transcript is not None:
+            self._fleet.transcript.note(f"[{self.node.name}] ({self._fleet.current_phase}) "
+                                        f"SFTP put {local_path} -> {remote_path}")
 
 
 class Fleet:
     """All three nodes, connected lazily, iterated in config order."""
 
     def __init__(self, nodes: list[Node], ssh_cfg: SSHConfig, password: str | None = None,
-                 sudo_password: str | None = None):
+                 sudo_password: str | None = None, transcript=None):
+        self.transcript = transcript
+        self.current_phase = ""  # set by run_phases()/cmd_clean() as phases start
         self.conns = [NodeConn(n, ssh_cfg, password, sudo_password) for n in nodes]
+        for c in self.conns:
+            c._fleet = self
 
     def __iter__(self):
         return iter(self.conns)
