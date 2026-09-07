@@ -1,0 +1,135 @@
+name: release
+
+# Cutting a release is: bump the version, update CHANGELOG.md, commit, then
+#
+#   git tag -a v1.0.0 -m "akropolis 1.0.0"
+#   git push origin main --follow-tags
+#
+# Everything below runs off that tag.
+
+on:
+  push:
+    tags:
+      - "v*"
+  # Manual re-run, for when a tag event is missed -- which happens if the tag
+  # is pushed in the same operation that first registers this workflow, since
+  # GitHub evaluates the event against the workflows it already knows about.
+  # Run against the *tag*, not a branch:
+  #
+  #   gh workflow run release --ref v1.0.1
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Must be run against a tag
+        run: |
+          if [ "$GITHUB_REF_TYPE" != "tag" ]; then
+            echo "::error::ref is $GITHUB_REF_NAME ($GITHUB_REF_TYPE) — re-run with --ref v<version>"
+            exit 1
+          fi
+
+      # Built on the oldest interpreter the project claims to support. Building
+      # on a newer one risks pip resolving a dependency wheel that requires that
+      # newer interpreter, producing an artifact that silently refuses to run on
+      # a 3.10 host.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Tag must match the declared version
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          declared="$(grep -m1 '^version = ' pyproject.toml | cut -d'"' -f2)"
+          module="$(grep -m1 '^__version__ = ' akropolis/__init__.py | cut -d'"' -f2)"
+          echo "tag=$tag pyproject=$declared module=$module"
+          if [ "$tag" != "$declared" ] || [ "$tag" != "$module" ]; then
+            echo "::error::version mismatch — tag $tag, pyproject $declared, module $module"
+            exit 1
+          fi
+
+      # The zipapp expects these from the system (see tools/build_pyz.sh). The
+      # runner needs them only so the build script's smoke test can import
+      # paramiko; they are not bundled into the artifact.
+      - name: Install the system-supplied runtime dependencies
+        run: python -m pip install --quiet cryptography bcrypt pynacl build
+
+      - name: Build the single-file executable
+        run: ./tools/build_pyz.sh
+
+      - name: Build wheel and sdist
+        run: python -m build --outdir dist/
+
+      - name: Verify the artifact
+        run: |
+          ./dist/akropolis --version
+          ./dist/akropolis --help > /dev/null
+          python - <<'EOF'
+          import sys
+          sys.path.insert(0, "dist/akropolis")
+          from importlib import resources
+          # The namespace-package trap: this is the check that catches a
+          # regression in akropolis/templates/__init__.py.
+          n = sum(1 for p in resources.files("akropolis.templates").iterdir()
+                  if p.name.endswith((".j2", ".yml", ".service")))
+          assert n >= 15, f"only {n} templates readable from the zipapp"
+          resources.files("akropolis.templates").joinpath("haproxy.cfg.j2").read_text()
+          print(f"{n} templates readable from the zipapp")
+          EOF
+
+      - name: Checksum
+        working-directory: dist
+        run: |
+          sha256sum akropolis *.whl *.tar.gz > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Extract release notes from CHANGELOG.md
+        run: |
+          awk -v ver="${GITHUB_REF_NAME#v}" '
+            $0 ~ "^## \\[" ver "\\]" { inside = 1; next }
+            inside && /^## / { exit }
+            inside { print }
+          ' CHANGELOG.md > release-notes.md
+          if [ ! -s release-notes.md ]; then
+            echo "::error::no CHANGELOG.md section for ${GITHUB_REF_NAME}"
+            exit 1
+          fi
+          cat >> release-notes.md <<'EOF'
+
+          ---
+
+          ### Install
+
+          ```
+          sudo apt install python3-cryptography python3-bcrypt python3-nacl
+          curl -fLO https://github.com/ktsouvalis/akropolis/releases/download/TAG/akropolis
+          chmod +x akropolis
+          ./akropolis --version
+          ```
+
+          Verify with `sha256sum -c SHA256SUMS`. Reproducible on Python 3.10:
+          `PYTHON=python3.10 ./tools/build_pyz.sh` on this tag.
+          EOF
+          sed -i "s|/download/TAG/|/download/${GITHUB_REF_NAME}/|" release-notes.md
+
+      # gh is preinstalled on the runner. Using it directly rather than a
+      # third-party action keeps a token with contents:write out of code we
+      # do not control.
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --title "akropolis ${GITHUB_REF_NAME#v}" \
+            --notes-file release-notes.md \
+            dist/akropolis \
+            dist/SHA256SUMS \
+            dist/*.whl \
+            dist/*.tar.gz

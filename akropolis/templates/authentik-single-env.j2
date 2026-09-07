@@ -1,0 +1,60 @@
+# Managed by akropolis — do not edit by hand (changes are overwritten on replay)
+AUTHENTIK_TAG={{ tag }}
+
+# Consumed by the postgresql service's own environment (${PG_*} substitution)
+# AND, below, by Authentik itself — same values, two different consumers.
+PG_DB=authentik
+PG_USER=authentik
+PG_PASS={{ pg_pass }}
+
+AUTHENTIK_POSTGRESQL__HOST=postgresql
+AUTHENTIK_POSTGRESQL__PORT=5432
+AUTHENTIK_POSTGRESQL__NAME=authentik
+AUTHENTIK_POSTGRESQL__USER=authentik
+AUTHENTIK_POSTGRESQL__PASSWORD={{ pg_pass }}
+
+AUTHENTIK_SECRET_KEY={{ secret_key }}
+
+# No AUTHENTIK_LISTEN__* overrides: no nginx, no network_mode: host, no
+# HAProxy — server and worker are ordinary isolated containers, each free
+# to use the image's own default ports (9000 http / 9443 https / 9300
+# metrics) with nothing to conflict with. Docker's own port publish (see
+# the server service's `ports:` in the compose file) maps host 443 -> the
+# container's 9443; :80 is deliberately left unpublished so certbot
+# standalone can use it (see authentik_certs_phase.py). This matches the
+# reference compose.yml at docs.goauthentik.io/compose.yml — the earlier
+# network_mode: host design was inherited from the HA cluster's compose
+# without the reason (HAProxy routing) that design exists for there; see
+# NOTES.md for the two real bugs it caused before this rewrite.
+
+AUTHENTIK_ERROR_REPORTING__ENABLED={{ 'true' if error_reporting else 'false' }}
+
+# Bootstrap value for the Base URL system setting — fixes the Admin
+# interface's "The base URL has not been configured" banner. Only takes
+# effect on a truly first start (authentik never overwrites a value already
+# set via the Admin UI/API), and falls back to this node's own IP when
+# tls.hostname was left blank (see remote.base_url() / config.py).
+AUTHENTIK_WEB__BASE_URL={{ base_url }}
+{% if email %}
+
+# SMTP — password resets, MFA email stage, notifications (guide 7.x .env)
+AUTHENTIK_EMAIL__HOST={{ email.host }}
+AUTHENTIK_EMAIL__PORT={{ email.port }}
+{% if email.username %}
+AUTHENTIK_EMAIL__USERNAME={{ email.username }}
+{% endif %}
+{% if email.password %}
+AUTHENTIK_EMAIL__PASSWORD={{ email.password }}
+{% endif %}
+AUTHENTIK_EMAIL__USE_TLS={{ 'true' if email.use_tls else 'false' }}
+AUTHENTIK_EMAIL__USE_SSL={{ 'true' if email.use_ssl else 'false' }}
+AUTHENTIK_EMAIL__TIMEOUT={{ email.timeout }}
+AUTHENTIK_EMAIL__FROM={{ email.from_addr }}
+{% endif %}
+
+# Consumed once on first migration: creates akadmin + API token.
+AUTHENTIK_BOOTSTRAP_PASSWORD={{ bootstrap_password }}
+AUTHENTIK_BOOTSTRAP_TOKEN={{ bootstrap_token }}
+{% if bootstrap_email %}
+AUTHENTIK_BOOTSTRAP_EMAIL={{ bootstrap_email }}
+{% endif %}

@@ -1,0 +1,35 @@
+global_defs {
+    script_user root
+    enable_script_security
+}
+
+vrrp_script chk_nginx {
+    script "/usr/bin/nc -z localhost {{ check_port }}"
+    interval 3
+    weight -25
+    fall 2
+    rise 2
+}
+
+vrrp_instance AUTHENTIK_VIP {
+    # All nodes run state BACKUP + nopreempt (keepalived's canonical no-preemption
+    # form; nopreempt is ignored on a MASTER-state instance). The highest-priority
+    # healthy node wins the initial election; a recovered node never steals the
+    # VIP back, avoiding a second flap.
+    state BACKUP
+    nopreempt
+    interface {{ interface }}
+    virtual_router_id {{ router_id }}
+    priority {{ priority }}
+    advert_int 1
+    authentication {
+        auth_type PASS
+        auth_pass {{ auth_pass }}
+    }
+    virtual_ipaddress {
+        {{ vip }}/24
+    }
+    track_script {
+        chk_nginx
+    }
+}

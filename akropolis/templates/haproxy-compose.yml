@@ -1,0 +1,13 @@
+services:
+  haproxy:
+    image: haproxy:3.0-alpine
+    container_name: haproxy
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - /opt/haproxy/config/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+    healthcheck:
+      test: ['CMD', 'haproxy', '-c', '-f', '/usr/local/etc/haproxy/haproxy.cfg']
+      interval: 10s
+      timeout: 5s
+      retries: 3

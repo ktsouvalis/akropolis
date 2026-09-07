@@ -1,0 +1,48 @@
+global
+    maxconn 1000
+    log stdout format raw local0
+
+defaults
+    log     global
+    mode    tcp
+    retries 3
+    timeout connect 5s
+    timeout client  1h
+    timeout server  1h
+    timeout check   8s
+    option  clitcpka
+    option  srvtcpka
+
+frontend stats
+    mode http
+    bind *:9000
+    stats enable
+    stats uri /stats
+    stats refresh 10s
+    stats auth admin:{{ stats_password }}
+    stats show-legends
+    stats show-node
+
+frontend pg_primary_frontend
+    bind *:5000
+    default_backend pg_primary_backend
+
+backend pg_primary_backend
+    option httpchk GET /primary
+    http-check expect status 200
+    default-server inter 5s fall 3 rise 2 on-marked-down shutdown-sessions
+{% for n in nodes %}
+    server pg-{{ n.name }} {{ n.ip }}:5432 check port 8008
+{% endfor %}
+
+frontend pg_replica_frontend
+    bind *:5001
+    default_backend pg_replica_backend
+
+backend pg_replica_backend
+    option httpchk GET /replica
+    http-check expect status 200
+    default-server inter 5s fall 3 rise 2 on-marked-down shutdown-sessions
+{% for n in nodes %}
+    server pg-{{ n.name }} {{ n.ip }}:5432 check port 8008
+{% endfor %}

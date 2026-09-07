@@ -1,0 +1,86 @@
+services:
+  postgresql:
+    image: docker.io/library/postgres:16-alpine
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      POSTGRES_DB: ${PG_DB:-authentik}
+      POSTGRES_USER: ${PG_USER:-authentik}
+      POSTGRES_PASSWORD: ${PG_PASS:?database password required}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -d $${POSTGRES_DB} -U $${POSTGRES_USER}"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    volumes:
+      - database:/var/lib/postgresql/data
+    # No published port at all — reachable from server/worker purely via
+    # Docker's own compose-network DNS (AUTHENTIK_POSTGRESQL__HOST:
+    # postgresql), matching the official compose.yml at
+    # docs.goauthentik.io/compose.yml. Never touches the host network stack.
+
+  server:
+    command: server
+    depends_on:
+      postgresql:
+        condition: service_healthy
+    image: ghcr.io/goauthentik/server:${AUTHENTIK_TAG}
+    restart: unless-stopped
+    shm_size: 512mb
+    # Container's OWN internal port stays the image default (9443) — never
+    # a privileged port, so no cap_add/root needed. Docker's own port
+    # publish (root/dockerd, not the containerized process) does the
+    # 443 -> 9443 remap; :80 is deliberately NOT published here, so
+    # certbot standalone can use it (see authentik_certs_phase.py).
+    ports:
+      - "443:9443"
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request,ssl,sys; ctx=ssl.create_default_context(); ctx.check_hostname=False; ctx.verify_mode=ssl.CERT_NONE; sys.exit(0) if urllib.request.urlopen('https://localhost:9443/-/health/live/', timeout=5, context=ctx).status == 200 else sys.exit(1)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    env_file:
+      - .env
+    volumes:
+      - /opt/authentik/data:/media
+      - /opt/authentik/custom-templates:/templates
+{% for v in extra_server_volumes %}
+      - {{ v }}
+{% endfor %}
+
+  worker:
+    command: worker
+    depends_on:
+      postgresql:
+        condition: service_healthy
+    image: ghcr.io/goauthentik/server:${AUTHENTIK_TAG}
+    restart: unless-stopped
+    shm_size: 512mb
+    # No AUTHENTIK_LISTEN__* overrides needed, unlike the HA cluster's
+    # worker: without network_mode: host, server and worker are in
+    # separate network namespaces and can never squat each other's ports —
+    # each can happily use the image's own defaults (9000 http / 9443
+    # https) with nothing to conflict with.
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request,sys; sys.exit(0) if urllib.request.urlopen('http://localhost:9000/-/health/live/', timeout=5).status == 200 else sys.exit(1)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    user: root
+    env_file:
+      - .env
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /opt/authentik/data:/media
+      - /opt/authentik/certs:/certs
+{% for v in extra_worker_volumes %}
+      - {{ v }}
+{% endfor %}
+
+volumes:
+  database:
+    driver: local

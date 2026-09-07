@@ -1,0 +1,256 @@
+# ak-cluster site configuration
+# One file per site. Same file feeds both entry points:
+#   ak-cluster provision config.<site>.yml
+#   ak-cluster monitor   config.<site>.yml   (subset, emitted automatically at handoff)
+#
+# Values in <angle brackets> are placeholders.
+
+# ---------------------------------------------------------------------------
+# Site identity & safety
+# ---------------------------------------------------------------------------
+site:
+  name: example-site                  # used in state file, prompts, emitted monitor config
+  environment: lab                # lab | production
+                                  #   production: every apply phase requires typing the
+                                  #   site name to confirm; --force is ignored.
+  description: "Example throwaway test cluster (VLAN 700)"
+  # topology: ha                  # ha (default) | single
+                                  #   ha: the 3-node stack below (etcd/Patroni/HAProxy/
+                                  #   nginx+keepalived). single: one node, no VIP,
+                                  #   PostgreSQL as a plain container, see `nodes:` below.
+                                  #   Changes exactly-3 → exactly-1 node requirement,
+                                  #   default authentik.tag, and required free ports.
+
+# Provisioner behavior
+provision:
+  state_file: .state/example-site.json   # phase completion + rendered-config checksums (resumability)
+  refuse_existing: true              # preflight FAILS if a node already has /etc/patroni,
+                                     # running ak containers, or an enabled keepalived unit.
+                                     # Override per-run with --adopt (never silently).
+                                     # Important when test VMs share a subnet with prod.
+
+# ---------------------------------------------------------------------------
+# SSH access (provisioning only, never written into the monitor config)
+# ---------------------------------------------------------------------------
+ssh:
+  user: root                      # or sudo-capable user
+  become: false                   # true if user != root
+  auth: key                       # key | agent | password  (password → prompted, never stored)
+  key_file: ~/.ssh/id_ed25519
+  port: 22
+
+# ---------------------------------------------------------------------------
+# Base OS setup
+# ---------------------------------------------------------------------------
+base:
+  apt_upgrade: false              # `apt update` always runs; `apt upgrade` does NOT
+                                  # unless this is true. Package drift belongs to your
+                                  # patching policy, not the provisioner, and an
+                                  # unattended upgrade mid-provision can replace
+                                  # libraries under a running Patroni (see NOTES.md).
+
+# ---------------------------------------------------------------------------
+# Nodes: exactly 3 for topology: ha, exactly 1 for topology: single
+# ---------------------------------------------------------------------------
+nodes:
+  - name: ak-node-1
+    ip: <NODE1_IP>
+    bootstrap_leader: true        # patroni initdb happens here; ACME/certbot lives here
+  - name: ak-node-2
+    ip: <NODE2_IP>
+  - name: ak-node-3
+    ip: <NODE3_IP>
+
+# ---------------------------------------------------------------------------
+# Network
+# ---------------------------------------------------------------------------
+network:
+  vip: <VIP_IP>
+  interface: ens18                # asserted in preflight on every node
+  expected_mtu: 1400              # preflight asserts (VXLAN overlay); set 1500 for flat L2
+  vrrp:
+    router_id: 51
+    auth_pass_prompt: true        # VRRP password prompted, not stored
+    priorities: [110, 100, 90]    # node order; track-script weight -25 baked into template
+  check_l2_adjacency: true        # preflight: nodes must see each other's VRRP multicast
+
+  # Upstream reverse proxy in front of the cluster (e.g. Traefik holding a
+  # HARICA wildcard, forwarding to the internal VIP). Without this, nginx
+  # overwrites X-Real-IP with the PROXY's address and X-Forwarded-Proto with
+  # its own scheme, so Authentik sees every login as coming from the proxy,
+  # poisoning reputation policies, event logs and GeoIP. Use with
+  # tls.provider: self_signed.
+  # trusted_proxies:
+  #   - 192.168.20.20             # IPs or CIDRs of the upstream proxy
+
+  # Extra sources allowed to read nginx stub_status on :8080. Loopback and the
+  # node subnet are always allowed, and monitor.ip is added automatically; add
+  # CIDRs here only for additional off-subnet collectors.
+  # stub_status_allow:
+  #   - 10.10.0.0/16
+
+# ---------------------------------------------------------------------------
+# PostgreSQL / Patroni / etcd
+# ---------------------------------------------------------------------------
+postgres:
+  version: 16
+  cluster_name: authentik-postgres
+  # superuser / replication / rewind passwords come from `secrets`, never here
+
+  # Extra pg_hba lines, appended to the DCS-managed rules. Use for external
+  # consumers such as a backup host or a reporting tool. Rules live in the DCS
+  # config so they survive a reinit; on-disk-only rules do not (NOTES.md).
+  # extra_pg_hba:
+  #   - "host authentik authentik 10.20.0.50/32 scram-sha-256"
+
+etcd:
+  # initial-cluster token is generated once and recorded in the state file,
+  # so a re-run never re-bootstraps a formed cluster
+  client_port: 2379
+  peer_port: 2380
+
+haproxy:
+  primary_port: 5000
+  replica_port: 5001
+  stats_port: 9000
+  timeouts_wan: true              # 1h client/server + tcp keepalives (guide 5.x)
+
+# ---------------------------------------------------------------------------
+# TLS: provider abstraction
+# ---------------------------------------------------------------------------
+tls:
+  provider: none                  # none | self_signed | acme | import
+  #
+  # none        : testing / local dev ONLY.
+  #               No certs generated. nginx listens on :80 plain HTTP, keepalived
+  #               track script checks :80. The internal nginx→Authentik leg stays
+  #               HTTPS :9443 (Authentik's own self-signed, unavoidable & fine).
+  #               LIMITATION: no secure context → WebAuthn/passkeys will not work,
+  #               and browsers may drop secure cookies. Refused when
+  #               site.environment == production.
+  #
+  # self_signed : lab / bootstrap. 10-year cert, SANs cover hostname + VIP + node IPs.
+  #
+  # acme        : any ACME CA via directory_url (LE, HARICA ACME, ZeroSSL...).
+  #               Runs on the bootstrap_leader node only; deploy hook distributes
+  #               to the other two over SSH. Bootstrap order handled internally:
+  #               self-signed first → nginx up → ACME issuance → swap → reload.
+  #
+  # import      : externally issued cert (HARICA portal flow). Validates chain +
+  #               key match + SAN coverage of `hostname`, distributes, reloads.
+  #               No renewal exists: expiry is written into the emitted monitor
+  #               config so ak-monitor alerts on it.
+
+  hostname: auth-test.example.com      # public FQDN; must resolve to VIP for acme
+
+  # acme:
+  #   directory_url: https://acme-v02.api.letsencrypt.org/directory
+  #   email: <admin_email>        # expiry and problem notices go here
+  #   staging: false              # true = Let's Encrypt staging: NOT browser-trusted.
+  #                               # Only for rehearsing issuance. Flipping it back to
+  #                               # false and re-running is enough; akropolis reads the
+  #                               # issuer of the certificate already on the node and
+  #                               # forces the reissue, because certbot on its own would
+  #                               # decline it as "not due for renewal" and leave the
+  #                               # staging certificate in place.
+  #   force_renewal: false        # force reissue unconditionally (rarely needed; the
+  #                               # staging<->production switch above is automatic)
+  # import:
+  #   fullchain: ./certs/fullchain.pem
+  #   privkey:   ./certs/privkey.pem   # or privkey_prompt: true
+
+# ---------------------------------------------------------------------------
+# Authentik
+# ---------------------------------------------------------------------------
+authentik:
+  tag: "2026.5.6"                  # the image tag every node is pinned to. `init` writes
+                                   #   this out for you with akropolis' default for your
+                                   #   topology; edit it to the version you actually want
+                                   #   BEFORE provisioning. QUOTE IT: unquoted, 2026.10 is
+                                   #   read by YAML as the float 2026.1, a different
+                                   #   release. Loading refuses an unquoted numeric tag.
+                                   #   Defaults differ by site.topology: ha → 2026.5.6
+                                   #   (2026.8.0 hit a multi-node embedded-outpost restart
+                                   #   loop, see NOTES.md); single → 2026.8.1 (no multi-node
+                                   #   outpost topology to trigger it).
+  # error_reporting: false        # optional, single-node topology only for now (the HA
+                                   # phase still hardcodes false; see NOTES.md). Unset →
+                                   # asked interactively at apply time, answer pinned in
+                                   # state (same pattern as monitor.ip / SMTP below).
+                                   # AUTHENTIK_ERROR_REPORTING__ENABLED.
+  # AUTHENTIK_SECRET_KEY: generated once, recorded encrypted in state, identical on all nodes
+  # Listen ports pinned off HAProxy's 9000 (guide 7.x): http 9080 / https 9443 / metrics 9300
+  bootstrap:
+    create_admin: true            # via AUTHENTIK_BOOTSTRAP_PASSWORD (prompted or generated)
+    create_api_token: true        # via AUTHENTIK_BOOTSTRAP_TOKEN → handed to monitor config
+  healthcheck: python3-urllib     # curl absent from image ≥2026.5.6 (guide 9.9)
+  # Custom branding. Paths are on THIS workstation; akropolis uploads them to
+  # every node under /opt/authentik/branding/ and derives the bind-mounts over
+  # /web/dist/assets/{icons,images}/, so files and volume list cannot drift.
+  # akropolis also points the DEFAULT brand at these via the API after startup
+  # (/static/dist/assets/...), because mounting the file alone leaves the stock
+  # logo showing; the brand record in the database is what selects the asset.
+  # branding:
+  #   logo: ./branding/logo.png
+  #   favicon: ./branding/favicon.png
+  #   background: ./branding/background.jpg
+  # SMTP for password resets / email stages (guide 7.x .env block).
+  # Omit the whole section → the authentik phase asks interactively and pins
+  # the answers in state. `enabled: false` → no email block, no questions.
+  # The SMTP password is NEVER put in this file: prompted once, pinned in state.
+  # email:
+  #   host: mail.example.com
+  #   port: 587
+  #   username: helpdesk          # omit key entirely → prompted; empty → anonymous SMTP
+  #   use_tls: true
+  #   use_ssl: false
+  #   timeout: 10
+  #   from: noreply@example.com
+
+# ---------------------------------------------------------------------------
+# Secrets handling
+# ---------------------------------------------------------------------------
+secrets:
+  source: prompt                  # prompt | file | env
+  # file: ./secrets.example-site.yml  # git-ignored; sops/age-encrypted supported
+  # Covers: postgres superuser/replication/rewind, VRRP pass, bootstrap admin
+  # password, bootstrap API token, secret key. NEVER copied into monitor config
+  # except the API token ak-monitor needs.
+
+# ---------------------------------------------------------------------------
+# Restore (optional, the migration/cutover move)
+# ---------------------------------------------------------------------------
+# Load a pg_dump from the old system into the new cluster, replacing the
+# freshly-bootstrapped database. Runs after the authentik phase, before
+# handoff. DESTRUCTIVE when enabled: authentik is stopped on all nodes, the
+# database is dropped WITH (FORCE), the dump is loaded on the CURRENT Patroni
+# leader with ON_ERROR_STOP, then authentik starts back leader-alone-first
+# (health gate covers migrations if the dump is from an older tag).
+# Omit the section (or sql_file) → the phase records "skipped" and moves on.
+# Re-run with a fresher dump at real cutover: akropolis provision ... --replay restore
+# restore:
+#   sql_file: ./dumps/authentik-prod.sql     # .sql or .sql.gz
+#   database: authentik                      # default
+#   owner: authentik                         # role that must own every restored
+#                                            # object; the load runs as the postgres
+#                                            # superuser, so ownership is re-applied
+#                                            # explicitly afterwards (dumps taken with
+#                                            # --no-owner would otherwise leave the app
+#                                            # role unable to write)
+#   timeout: 3600                            # psql budget, seconds
+#   migration_timeout: 3600                  # budget for the worker to migrate the
+#                                            # restored data before the server joins
+
+# ---------------------------------------------------------------------------
+# Handoff
+# ---------------------------------------------------------------------------
+monitor:
+  emit: true
+  output: ./config.example-site.monitor.yml
+  # ip: 10.0.0.90               # the ak-monitor host; the base phase adds a UFW rule
+                                  # allowing it to 2379,5000,5001,8008,9000,9443/tcp on
+                                  # every node. Omit → asked interactively (Enter to skip;
+                                  # the answer is pinned in state).
+  # Emitted contents: nodes/IPs, VIP, Patroni REST :8008, etcd :2379,
+  # HAProxy stats :9000 (csv), Authentik health endpoints, worker check via
+  # /api/v3/tasks/workers/, API token, and cert expiry date when provider=import.

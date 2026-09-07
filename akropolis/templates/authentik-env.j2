@@ -1,0 +1,48 @@
+# Managed by akropolis — do not edit by hand (changes are overwritten on replay)
+AUTHENTIK_TAG={{ tag }}
+
+AUTHENTIK_POSTGRESQL__HOST=127.0.0.1
+AUTHENTIK_POSTGRESQL__PORT=5000
+AUTHENTIK_POSTGRESQL__NAME=authentik
+AUTHENTIK_POSTGRESQL__USER=authentik
+AUTHENTIK_POSTGRESQL__PASSWORD={{ db_password }}
+
+AUTHENTIK_SECRET_KEY={{ secret_key }}
+
+# REQUIRED for network_mode: host where HAProxy occupies port 9000 —
+# without these the Go router silently fails to bind and internal APIs 503.
+AUTHENTIK_LISTEN__HTTP=0.0.0.0:9080
+AUTHENTIK_LISTEN__HTTPS=0.0.0.0:9443
+AUTHENTIK_LISTEN__METRICS=0.0.0.0:9300
+
+AUTHENTIK_ERROR_REPORTING__ENABLED=false
+
+# Bootstrap value for the Base URL system setting (2026.8+; a no-op env var
+# on older tags, which is fine — 2026.5.6 here just ignores it). Fixes the
+# Admin interface's "The base URL has not been configured" banner. Only
+# takes effect on a truly first start — never overwrites a value already set
+# via the Admin UI/API, so replays/upgrades don't fight an operator's change.
+AUTHENTIK_WEB__BASE_URL={{ base_url }}
+{% if email %}
+
+# SMTP — password resets, MFA email stage, notifications (guide 7.x .env)
+AUTHENTIK_EMAIL__HOST={{ email.host }}
+AUTHENTIK_EMAIL__PORT={{ email.port }}
+{% if email.username %}
+AUTHENTIK_EMAIL__USERNAME={{ email.username }}
+{% endif %}
+{% if email.password %}
+AUTHENTIK_EMAIL__PASSWORD={{ email.password }}
+{% endif %}
+AUTHENTIK_EMAIL__USE_TLS={{ 'true' if email.use_tls else 'false' }}
+AUTHENTIK_EMAIL__USE_SSL={{ 'true' if email.use_ssl else 'false' }}
+AUTHENTIK_EMAIL__TIMEOUT={{ email.timeout }}
+AUTHENTIK_EMAIL__FROM={{ email.from_addr }}
+{% endif %}
+
+# Consumed once on first migration: creates akadmin + API token.
+AUTHENTIK_BOOTSTRAP_PASSWORD={{ bootstrap_password }}
+AUTHENTIK_BOOTSTRAP_TOKEN={{ bootstrap_token }}
+{% if bootstrap_email %}
+AUTHENTIK_BOOTSTRAP_EMAIL={{ bootstrap_email }}
+{% endif %}

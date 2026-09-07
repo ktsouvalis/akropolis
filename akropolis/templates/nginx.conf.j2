@@ -1,0 +1,110 @@
+events {
+    worker_connections 1024;
+}
+
+http {
+{% if trusted_proxies %}
+    # Behind an external reverse proxy (e.g. Traefik terminating public TLS):
+    # trust X-Forwarded-For from these addresses so Authentik sees real client
+    # IPs (reputation policies, event logs, GeoIP), and pass the original
+    # protocol through instead of overwriting it with our own scheme.
+{% for p in trusted_proxies %}
+    set_real_ip_from {{ p }};
+{% endfor %}
+    real_ip_header X-Forwarded-For;
+    real_ip_recursive on;
+    map $http_x_forwarded_proto $client_proto {
+        default $http_x_forwarded_proto;
+        ''      $scheme;
+    }
+{% endif %}
+    # With TLS on the frontend, proxy to Authentik's HTTPS listener (9443).
+    # With tls provider "none", proxy to the HTTP listener (9080): the Go
+    # router generates absolute URLs with scheme https for ANY request that
+    # arrives on its TLS listener, ignoring X-Forwarded-Proto — behind a
+    # plain-HTTP frontend the browser then fetches https://<VIP>/... and
+    # gets connection refused (no 443 listener exists in this mode).
+    upstream authentik_backend {
+        least_conn;
+{% for n in nodes %}
+        server {{ n.ip }}:{% if tls_enabled %}9443{% else %}9080{% endif %} fail_timeout=10s max_fails=3;
+{% endfor %}
+    }
+
+{% if tls_enabled %}
+    # HTTP -> HTTPS redirect (with ACME challenge exception for certbot)
+    server {
+        listen 80;
+        server_name {{ hostname }};
+
+        location /.well-known/acme-challenge/ {
+            alias /var/www/certbot/.well-known/acme-challenge/;
+        }
+
+        location / {
+            return 301 https://$host$request_uri;
+        }
+    }
+{% endif %}
+
+    # nginx status endpoint - used by the monitoring tool
+    server {
+        listen 8080;
+        server_name _;
+        location /nginx_status {
+            stub_status;
+            # loopback allowed so on-node health checks (verify, ops curl)
+            # aren't 403'd by the subnet ACL — source IP for a local curl
+            # under network_mode: host is 127.0.0.1, not a subnet address.
+            allow 127.0.0.1;
+            allow {{ nodes_subnet }};
+{% for cidr in stub_status_allow %}
+            allow {{ cidr }};
+{% endfor %}
+            deny all;
+        }
+    }
+
+{% if tls_enabled %}
+    # HTTPS reverse proxy -> Authentik
+    server {
+        listen 443 ssl;
+        server_name {{ hostname }};
+
+        ssl_certificate     /etc/nginx/certs/fullchain.pem;
+        ssl_certificate_key /etc/nginx/certs/privkey.pem;
+        ssl_protocols       TLSv1.2 TLSv1.3;
+        ssl_ciphers         HIGH:!aNULL:!MD5;
+{% else %}
+    # tls provider "none": plain HTTP reverse proxy (testing only)
+    server {
+        listen 80;
+        server_name _;
+{% endif %}
+
+        location / {
+            proxy_pass         {% if tls_enabled %}https{% else %}http{% endif %}://authentik_backend;
+            proxy_set_header   Host $host;
+            proxy_set_header   X-Real-IP $remote_addr;
+            proxy_set_header   X-Forwarded-For $proxy_add_x_forwarded_for;
+{% if trusted_proxies %}
+            proxy_set_header   X-Forwarded-Proto $client_proto;
+{% else %}
+            proxy_set_header   X-Forwarded-Proto $scheme;
+{% endif %}
+            proxy_set_header Upgrade $http_upgrade;
+            proxy_set_header Connection "upgrade";
+            proxy_http_version 1.1;
+            proxy_ssl_verify   off;
+            proxy_buffer_size  128k;
+            proxy_buffers      4 256k;
+            proxy_read_timeout 90s;
+        }
+
+        # Monitor endpoint - identifies which node currently holds the VIP
+        location /monitor {
+            default_type application/json;
+            return 200 '{"node":"{{ node.name }}","ip":"{{ node.ip }}"}';
+        }
+    }
+}
