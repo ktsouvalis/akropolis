@@ -78,10 +78,19 @@ find "$BUILD" -name '*.so' -delete
 find "$BUILD" -name '__pycache__' -type d -prune -exec rm -rf {} +
 
 # The .dist-info directories stay, but pruned to what is actually read at
-# runtime. METADATA is not optional: paramiko resolves its own version through
-# importlib.metadata at import time and raises PackageNotFoundError without it.
+# runtime or owed to the licenses of what we're bundling. METADATA is not
+# optional: paramiko resolves its own version through importlib.metadata at
+# import time and raises PackageNotFoundError without it. The LICENSE* /
+# COPYING* / NOTICE* / AUTHORS* files are not optional either: this archive
+# redistributes these packages' source, paramiko among them under the LGPL,
+# and the license text has to travel with the code it covers. Most wheels
+# nest theirs under dist-info/licenses/ (below our maxdepth 2, so already
+# untouched), but not all of them do -- mdurl 0.1.2 ships a bare top-level
+# LICENSE file in its dist-info, which the old (METADATA-and-entry_points.txt-
+# only) filter silently deleted. Caught by inspecting the built artifact
+# directly rather than assuming the filter was exhaustive; see NOTES.md.
 #
-# Everything else is build-host residue that makes the artifact
+# Everything else pruned is build-host residue that makes the artifact
 # non-reproducible:
 #   direct_url.json  absolute path of the source tree on the build machine
 #   WHEEL            interpreter tag of the downloaded wheel (cp310 vs cp312)
@@ -90,8 +99,73 @@ find "$BUILD" -name '__pycache__' -type d -prune -exec rm -rf {} +
 #   INSTALLER,
 #   REQUESTED        no runtime consumer
 find "$BUILD" -maxdepth 2 -type f -path '*.dist-info/*' \
-     ! -name 'METADATA' ! -name 'entry_points.txt' -delete
+     ! -name 'METADATA' ! -name 'entry_points.txt' \
+     ! -iname 'LICENSE*' ! -iname 'LICENCE*' \
+     ! -iname 'COPYING*' ! -iname 'NOTICE*' ! -iname 'AUTHORS*' \
+     -delete
 find "$BUILD" -type d -path '*.dist-info/*' -empty -delete
+
+echo "==> writing third-party license manifest"
+# One file, generated from what actually got bundled rather than hand-kept in
+# sync, listing every vendored dependency's declared license. The full license
+# texts themselves already travel inside the archive (see above); this is the
+# human-readable index of what's in there and under what terms, shipped
+# alongside the binary as dist/THIRD_PARTY_LICENSES.md.
+"$PY" - "$BUILD" <<'EOF' > "$DIST/THIRD_PARTY_LICENSES.md"
+import pathlib, re, sys
+
+root = pathlib.Path(sys.argv[1])
+
+
+def declared_license(meta_text: str) -> str:
+    m = re.search(r'^License-Expression:\s*(.+)$', meta_text, re.M)
+    if m:
+        return m.group(1).strip()
+    m = re.search(r'^License:\s*(.+)$', meta_text, re.M)
+    if m and m.group(1).strip() and m.group(1).strip().upper() != "UNKNOWN":
+        return m.group(1).strip()
+    m = re.search(r'^Classifier:\s*License :: OSI Approved :: (.+)$', meta_text, re.M)
+    if m:
+        return m.group(1).strip()
+    return "unknown -- see embedded license file"
+
+
+rows = []
+for d in sorted(root.glob("*.dist-info")):
+    name, _, version = d.name[: -len(".dist-info")].rpartition("-")
+    if name.lower() == "akropolis":
+        continue
+    meta_path = d / "METADATA"
+    meta = meta_path.read_text(errors="replace") if meta_path.exists() else ""
+    lic = declared_license(meta)
+    lic_files = sorted(
+        p.relative_to(root)
+        for p in d.rglob("*")
+        if p.is_file() and re.match(r"(?i)^(LICEN[CS]E|COPYING|NOTICE|AUTHORS)", p.name)
+    )
+    rows.append((name, version, lic, lic_files))
+
+print("# Third-party licenses")
+print()
+print("akropolis (MIT) is distributed as a single-file zipapp that also")
+print("carries the pure-Python packages it depends on -- their source ships")
+print("inside this archive, not just akropolis's own. Each package's full")
+print("license text ships alongside it, under the paths listed below; this")
+print("file is the index, not a substitute for those texts.")
+print()
+print("paramiko is LGPL-2.1: the version bundled here is unmodified,")
+print("readable Python source, sitting in this same archive next to the")
+print("license that covers it.")
+print()
+print("| Package | Version | License | License file(s) in this archive |")
+print("| :--- | :--- | :--- | :--- |")
+for name, version, lic, lic_files in rows:
+    if lic_files:
+        paths = "<br>".join(f"`{f}`" for f in lic_files)
+    else:
+        paths = "*(none shipped by upstream)*"
+    print(f"| {name} | {version} | {lic} | {paths} |")
+EOF
 
 echo "==> writing manifest"
 "$PY" - "$BUILD" <<'EOF' > "$BUILD/BUNDLE-MANIFEST.txt"
@@ -114,6 +188,10 @@ print("Supplied by the system, NOT bundled (apt install python3-<name>):")
 print()
 for name in ("cryptography", "bcrypt", "nacl"):
     print(f"  {name}")
+print()
+print("Licenses for the bundled packages above: see THIRD_PARTY_LICENSES.md")
+print("(shipped next to this binary) or <package>.dist-info/licenses/ inside")
+print("this archive.")
 EOF
 
 cat > "$BUILD/__main__.py" <<'EOF'

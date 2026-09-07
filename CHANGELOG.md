@@ -11,6 +11,15 @@ dead ends.
 
 ## [Unreleased]
 
+### Added
+
+- `THIRD_PARTY_LICENSES.md`, generated at build time from the bundled
+  dependencies' own metadata and published alongside the `akropolis` binary
+  on every release, indexing each vendored package's declared license and
+  where its full license text lives inside the archive. paramiko (LGPL-2.1)
+  is the one bundled dependency that isn't permissively licensed; the
+  README's architecture table now says so.
+
 ### Fixed
 
 - The documented install line used `curl -LO`, which saves an HTTP error page
@@ -18,6 +27,13 @@ dead ends.
   release was still publishing produced a `chmod +x`'d copy of GitHub's 404
   page and the cryptic `/tmp/ak: line 1: Not: command not found`. Now `-fLO`,
   in both the README and the release-notes boilerplate.
+- The zipapp build's dist-info pruning kept only `METADATA` and
+  `entry_points.txt`, on the assumption that every wheel ships its license
+  text under `dist-info/licenses/` (below the prune's `maxdepth 2`, so
+  untouched). `mdurl` 0.1.2 doesn't: its `LICENSE` sits directly in
+  `dist-info/`, so it was being silently deleted from every release
+  artifact. The filter now also keeps `LICENSE*`/`LICENCE*`/`COPYING*`/
+  `NOTICE*`/`AUTHORS*` wherever they sit.
 
 ## [1.0.1] - 2026-09-07
 

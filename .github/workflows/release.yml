@@ -87,7 +87,7 @@ jobs:
       - name: Checksum
         working-directory: dist
         run: |
-          sha256sum akropolis *.whl *.tar.gz > SHA256SUMS
+          sha256sum akropolis THIRD_PARTY_LICENSES.md *.whl *.tar.gz > SHA256SUMS
           cat SHA256SUMS
 
       - name: Extract release notes from CHANGELOG.md
@@ -130,6 +130,7 @@ jobs:
             --title "akropolis ${GITHUB_REF_NAME#v}" \
             --notes-file release-notes.md \
             dist/akropolis \
+            dist/THIRD_PARTY_LICENSES.md \
             dist/SHA256SUMS \
             dist/*.whl \
             dist/*.tar.gz

@@ -27,6 +27,14 @@ Akropolis orchestrates a robust, highly-available identity infrastructure powere
 
 *Note: All trademarks are the property of their respective owners.*
 
+The `akropolis` release binary also bundles the pure-Python libraries it
+depends on (paramiko, Jinja2, PyYAML, rich and their own dependencies) —
+their source ships inside that single file, not just akropolis's own. Each
+release publishes a `THIRD_PARTY_LICENSES.md` alongside the binary indexing
+every bundled package's license, and the full license text for each ships
+in the archive next to it. paramiko is LGPL-2.1; everything else bundled is
+MIT/BSD.
+
 ## Status
 
 | Phase | Status |
@@ -506,4 +514,7 @@ This repository's commit history begins at v1.0.1. History prior to this point i
 
 ## License
 
-MIT.
+MIT. Third-party components bundled inside the release binary are under
+their own licenses — see `THIRD_PARTY_LICENSES.md` published with each
+release, or the [Architecture deployed](#architecture-deployed) section
+above.

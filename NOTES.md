@@ -1049,3 +1049,45 @@ previously-published artifact bytes (downloaded, not rebuilt), so
 `SHA256SUMS` and the install instructions still match. `v1.0.0` was not
 carried forward onto the new history; it remains reachable only in the
 archive.
+
+
+## Third-party licenses were assumed covered, weren't checked (Sep 2026)
+
+The README's architecture table credits everything akropolis *orchestrates*
+(Authentik, PostgreSQL, Patroni, etcd, HAProxy, nginx, Keepalived, Docker,
+Python, Ubuntu) with a logo, a link, and a trademark disclaimer. That part
+was fine — none of those are redistributed in code form, so a credit line is
+all that's owed.
+
+What wasn't checked: `build_pyz.sh` vendors paramiko, Jinja2, PyYAML, and
+rich *as source* directly into the release binary. That's actual code
+redistribution, and paramiko is LGPL-2.1 — a different obligation than a
+credit line, and one the repo had never actually verified it was meeting.
+
+Checking it meant building the artifact and looking inside it rather than
+reasoning about what the build script *should* do. Two things fell out:
+
+- The license texts were already there. Modern wheels (all the ones
+  currently pulled in) carry their license under `dist-info/licenses/`,
+  which sits below the prune step's `find -maxdepth 2`, so it had been
+  surviving into every release all along, just with nothing pointing at it.
+- One wasn't: `mdurl` 0.1.2 (a transitive dep of rich, via markdown-it-py)
+  ships its `LICENSE` as a bare file directly in `dist-info/`, not under
+  `licenses/`. The prune step's allow-list (`METADATA`, `entry_points.txt`)
+  deleted it from every 1.0.x release artifact without anyone noticing,
+  since nothing checked the artifact's contents against what the wheels
+  actually shipped.
+
+Fix was two parts: widen the prune's keep-list to any `LICENSE*` /
+`COPYING*` / `NOTICE*` / `AUTHORS*` file regardless of where it sits, and
+generate `THIRD_PARTY_LICENSES.md` from the bundled dist-info metadata at
+build time (not hand-maintained — it would have gone stale the first time a
+dependency version changed) so the license set is visible without having to
+unzip the binary to find it.
+
+Also surfaced: paramiko 5.0.0 added `invoke` as an unconditional dependency
+(previously a `[develop]`/testing extra, going by upstream history). It's a
+task-runner, unused at runtime by anything akropolis does with paramiko —
+it's pulled in and bundled purely because paramiko now declares it
+unconditionally. Not a bug, just worth knowing next time the bundle size or
+the license table changes shape without a corresponding akropolis change.
