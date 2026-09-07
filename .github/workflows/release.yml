@@ -8,9 +8,12 @@ name: release
 # Everything below runs off that tag.
 
 on:
-  push:
-    tags:
-      - "v*"
+  # Tag-push trigger temporarily disabled while v1.0.1 is re-cut on the new
+  # genesis commit reusing the original release assets rather than rebuilding.
+  # Restored right after.
+  # push:
+  #   tags:
+  #     - "v*"
   # Manual re-run, for when a tag event is missed -- which happens if the tag
   # is pushed in the same operation that first registers this workflow, since
   # GitHub evaluates the event against the workflows it already knows about.
