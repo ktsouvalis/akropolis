@@ -11,6 +11,15 @@ dead ends.
 
 ## [Unreleased]
 
+## [1.0.2] - 2026-09-07
+
+v1.0.1's published binary bundled paramiko, Jinja2, PyYAML, and rich as
+source without ever verifying their license obligations were met — see
+NOTES.md. Re-cutting v1.0.1 in place was considered and rejected: this
+changes the artifact's actual bytes, and anyone who already downloaded
+and checksum-verified v1.0.1 deserves that tag to keep meaning what it
+meant. A patch version is the right size for a no-behavior-change fix.
+
 ### Added
 
 - `THIRD_PARTY_LICENSES.md`, generated at build time from the bundled
