@@ -1,5 +1,5 @@
-<p>
-<img src="./assets/akropolis-readme-header-v3.png" width="100%" />
+<p align="center">
+<img src="./assets/akropolis-logo-transparent.png" width="60%" />
 </p>
 
 Provision and monitor a highly-available 3-node/single-node [Authentik](https://goauthentik.io) cluster over SSH.
@@ -507,7 +507,3 @@ This repository's commit history begins at v1.0.1. History prior to this point i
 ## License
 
 MIT.
-
-<p align="center">
-<img src="./assets/akropolis-logo-transparent.png" width="60%" />
-</p>
