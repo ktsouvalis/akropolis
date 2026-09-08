@@ -2,7 +2,7 @@
 <img src="./assets/akropolis-logo-transparent.png" width="60%" />
 </p>
 
-Provision and monitor a highly-available 3-node/single-node [Authentik](https://goauthentik.io) cluster over SSH.
+Provision and [monitor](https://github.com/ktsouvalis/akropolis-monitor) a highly-available 3-node/single-node [Authentik](https://goauthentik.io) cluster over SSH.
 
 akropolis turns three fresh Ubuntu 24.04 VMs into a production-grade Authentik identity provider cluster: PostgreSQL 16 with Patroni auto-failover over etcd, per-node HAProxy connection routing, nginx TLS termination, and a keepalived VRRP virtual IP, following a battle-tested implementation guide. It runs from your workstation, needs nothing installed on the nodes beforehand, and ends by emitting a ready-to-use config for its monitoring companion.
 
