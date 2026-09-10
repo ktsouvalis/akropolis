@@ -101,6 +101,10 @@ class NginxKeepalivedPhase(Phase):
                 "distribution, authorized on the other nodes (marker-managed)",
                 f"certbot certonly --webroot for {cfg.tls.hostname} against "
                 f"{a.get('directory_url')}" + (" [STAGING]" if a.get("staging") else ""),
+                "reissue is forced automatically when the certificate already on the "
+                "leader was issued by the other environment (staging vs production) — "
+                "certbot would otherwise decline it as not due for renewal and leave "
+                "the wrong certificate in place",
                 "install akropolis deploy hook (auto-distribution on every renewal), "
                 "run it once to swap the placeholder cert now, pin expiry in state",
             ]
@@ -218,18 +222,48 @@ class NginxKeepalivedPhase(Phase):
             ctx.record(conn.node.name, "distribution key authorized", r.ok,
                        r.err if not r.ok else "")
 
+        # Why --force-renewal is not just a config toggle: certbot refuses to
+        # reissue a lineage that is not within 30 days of expiry, and it makes
+        # that decision on validity ALONE — it does not care that the cert on
+        # disk was issued by the staging CA and this run is now asking for the
+        # real one. Rehearse with staging, flip the flag, replay, and certbot
+        # says "not due for renewal" and leaves the untrusted certificate in
+        # place — --keep-until-expiring then quietly "succeeds" without ever
+        # reissuing. So: read the issuer of whatever is already there, and
+        # force the reissue when it disagrees with what this run is asking
+        # for. Mirrors the single-node certs phase's _acme().
+        staging = bool(a.get("staging"))
+        live = f"/etc/letsencrypt/live/{cfg.tls.hostname}"
+        force = bool(a.get("force_renewal"))
+        reason = "acme.force_renewal is set in the site config" if force else ""
+        r = leader.run(f"test -f {shlex.quote(live)}/fullchain.pem && "
+                       f"openssl x509 -noout -issuer -in {shlex.quote(live)}/fullchain.pem")
+        if r.ok and r.out:
+            existing_staging = "STAGING" in r.out.upper()
+            if existing_staging != staging:
+                force = True
+                reason = (f"existing certificate is {'staging' if existing_staging else 'production'}, "
+                          f"this run asks for {'staging' if staging else 'production'}")
+            ctx.record(leader.node.name, "existing certbot lineage", True,
+                       f"{'staging' if existing_staging else 'production'} issuer"
+                       + (f" — forcing reissue ({reason})" if force else " — matches this run"),
+                       warn=force)
+        if force and reason:
+            ctx.record(leader.node.name, "forcing certificate reissue", True, reason, warn=True)
+
         # issuance — the VIP holder serves the challenge; certbot lives on the leader
         cmd = (f"certbot certonly --webroot -w /var/www/certbot "
                f"-d {shlex.quote(cfg.tls.hostname)} "
                f"--email {shlex.quote(a['email'])} --agree-tos --no-eff-email "
                f"--server {shlex.quote(a['directory_url'])} "
-               f"--non-interactive --keep-until-expiring"
-               + (" --staging" if a.get("staging") else ""))
+               f"--non-interactive"
+               + (" --staging" if staging else "")
+               + (" --force-renewal" if force else " --keep-until-expiring"))
         ctx.begin(leader.node.name, "certbot issuance", "HTTP-01 via the VIP webroot")
         r = leader.run(cmd, timeout=600)
         issued = r.ok
         ctx.record(leader.node.name,
-                   "certbot issuance" + (" [STAGING]" if a.get("staging") else ""),
+                   "certbot issuance" + (" [STAGING]" if staging else ""),
                    issued, (r.err or r.out).splitlines()[-1] if not issued else "")
         if not issued:
             raise RuntimeError("certbot issuance failed — placeholder cert remains in "
@@ -259,7 +293,7 @@ class NginxKeepalivedPhase(Phase):
         ctx.state.data["generated"]["tls_acme_pending"] = False
         ctx.state.data["generated"]["tls_cert_expiry"] = expiry
         ctx.state.save()
-        if a.get("staging"):
+        if staging:
             ctx.record("cluster", "staging cert in place", True,
                        "browsers will NOT trust it — set tls.acme.staging: false and "
                        "--replay nginx-keepalived for the real one", warn=False)

@@ -11,6 +11,22 @@ dead ends.
 
 ## [Unreleased]
 
+## [1.0.3] - 2026-09-10
+
+### Fixed
+
+- The HA cluster's ACME finalization (`nginx-keepalived` phase) ran certbot
+  with `--keep-until-expiring` and never `--force-renewal`, so rehearsing
+  with `tls.acme.staging: true` and then replaying with `staging: false`
+  left the staging certificate in place: certbot decides whether to reissue
+  purely on the existing lineage's validity, doesn't care which CA issued
+  it, and exits 0 either way, so the phase reported success while
+  redistributing the same untrusted cert to every node. The single-node
+  `certs` phase already read the existing certificate's issuer and forced
+  reissue on a staging↔production mismatch; that check is now shared by the
+  cluster path, so `--replay tls` followed by `--replay nginx-keepalived`
+  reliably swaps a staging cert for a production one.
+
 ## [1.0.2] - 2026-09-07
 
 v1.0.1's published binary bundled paramiko, Jinja2, PyYAML, and rich as
