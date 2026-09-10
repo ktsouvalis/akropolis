@@ -11,6 +11,24 @@ dead ends.
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-09-10
+
+### Added
+
+- `akropolis shutdown` and `akropolis start`: gracefully pause and resume
+  just the authentik `server`+`worker` containers on an already-provisioned
+  site. On `ha`, the rest of the stack (etcd, Patroni/PostgreSQL, HAProxy,
+  nginx, keepalived) stays up — the VIP keeps answering. On `single`, the
+  `postgresql` container sharing the same compose project is explicitly
+  left running. `start` refuses to run unless the last `shutdown` completed
+  gracefully, and clears that flag again on success, so a stray `start`
+  can't silently no-op against a cluster nobody deliberately paused.
+- On `ha`, nginx now serves a bilingual (Greek/English) maintenance page
+  whenever every authentik backend is unreachable (502/503/504) — from a
+  deliberate `shutdown` or an actual outage — instead of its bare error
+  page. The real HTTP status code is preserved, so uptime/alerting
+  monitoring is unaffected.
+
 ## [1.1.0] - 2026-09-10
 
 ### Added
