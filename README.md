@@ -481,6 +481,20 @@ material without a separate step.
 
 Destruction earns the typed-site-name gate in *every* environment, not just production; `site.environment: production` is refused outright unless `--i-know-this-is-production` is also given. The local state file is archived to `.state/<site>.json.cleaned-<timestamp>` (0600, the pinned secrets are your paper trail) and removed, so the next provision regenerates every secret and preflight's `refuse_existing` passes on a genuinely blank slate. Cleaning a half-built node (exactly what a failed provision leaves behind) is a supported case: every step is idempotent.
 
+## Upgrading Authentik
+
+Bump `authentik.tag` in `config.<site>.yml`, then:
+
+```bash
+akropolis provision config.<site>.yml --replay authentik
+```
+
+`--replay` marks only the `authentik` phase pending; every other completed phase stays skipped. The phase finds the cluster already running and switches to its rolling path: on `ha` that's node-3 → node-2 → node-1, one at a time, `docker compose down && up -d`, gated on both containers reporting `healthy` before moving to the next node — a node that fails its gate stops the phase with the others still serving. On `single` it's the one node, same health gate.
+
+The plan printed before the confirmation prompt calls out the version change (`authentik.tag changed: X -> Y`) whenever it differs from the last tag this phase successfully applied. Two things akropolis does **not** do for you, so check them before confirming:
+
+- **No backup.** Authentik runs its DB migrations on container start with no rollback. Take one first — `restore.sql_file` on a fresh site restores a dump, but there's no equivalent "dump this cluster before upgrading" step; use `pg_dump` (`ha`: against the Patroni leader; `single`: against the `postgresql` container) by hand.
+- **No version-skip check.** Authentik's own release notes sometimes require going through an intermediate version rather than jumping straight to the target. akropolis renders whatever tag you give it — check upstream's upgrade path yourself.
 
 ## Configuration reference
 

@@ -45,7 +45,8 @@ import shlex
 from pathlib import Path
 
 from ..remote import base_url, push_binary, push_file, render
-from .authentik_phase import BRAND_FIELDS, apply_brand, dump_logs, wait_healthy
+from .authentik_phase import (BRAND_FIELDS, apply_brand, dump_logs, pin_applied_tag,
+                              tag_change_warning, wait_healthy)
 from .base import Phase, PhaseContext
 
 
@@ -172,6 +173,9 @@ class AuthentikSinglePhase(Phase):
             "AUTHENTIK_SECRET_KEY / postgres password / bootstrap admin password / "
             "bootstrap API token: generated once, pinned in state, never printed",
         ]
+        warning = tag_change_warning(ctx, self.name, cfg.authentik_tag)
+        if warning:
+            lines.append(warning)
         if acfg.get("error_reporting") is not None:
             lines.append(f"error reporting: {acfg['error_reporting']} (from site config)")
         elif "authentik_error_reporting" in ctx.state.data["generated"]:
@@ -264,6 +268,8 @@ class AuthentikSinglePhase(Phase):
         branding_cfg = acfg.get("branding") or {}
         if branding_cfg:
             apply_brand(ctx, conn, branding_cfg, sec["bootstrap_token"], port=443)
+
+        pin_applied_tag(ctx, self.name, cfg.authentik_tag)
 
     # ---------------------------------------------------------------- verify
     def verify(self, ctx: PhaseContext) -> bool:

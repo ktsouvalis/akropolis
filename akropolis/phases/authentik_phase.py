@@ -50,6 +50,36 @@ HEALTHY = ("docker inspect -f '{{.State.Health.Status}}' authentik-server-1 "
 ALL_HEALTHY = f'[ "$({HEALTHY})" = healthy ]'
 
 
+def previous_tag(ctx: PhaseContext, phase_name: str) -> str | None:
+    """The authentik.tag pinned by this phase's last successful apply, or
+    None on a fresh site (nothing to compare a version jump against yet)."""
+    return ctx.state.data["phases"].get(phase_name, {}).get("authentik_tag")
+
+
+def tag_change_warning(ctx: PhaseContext, phase_name: str, new_tag: str) -> str | None:
+    """A plan() line warning about an authentik.tag change, or None when the
+    tag is unchanged (or this is the first-ever apply).
+
+    Authentik runs its DB migrations on container start with no rollback, and
+    its own release notes sometimes require going through an intermediate
+    version rather than jumping straight to the target — akropolis has no way
+    to know that, so it just makes sure the operator sees the change and is
+    reminded to check before confirming.
+    """
+    old = previous_tag(ctx, phase_name)
+    if old and old != new_tag:
+        return (f"[yellow]authentik.tag changed: {old} -> {new_tag}[/yellow] — triggers a "
+                "rolling upgrade with DB migrations on container start (no rollback). "
+                "Back up first (restore.sql_file / pg_dump) and check Authentik's release "
+                f"notes for the {old} -> {new_tag} path — some jumps require an "
+                "intermediate version.")
+    return None
+
+
+def pin_applied_tag(ctx: PhaseContext, phase_name: str, tag: str) -> None:
+    ctx.state.mark_phase(phase_name, "applying", {"authentik_tag": tag})
+
+
 def one_healthy_cmd(container: str) -> str:
     return ('[ "$(docker inspect -f \'{{.State.Health.Status}}\' '
             f'{container} 2>/dev/null)" = healthy ]')
@@ -269,6 +299,9 @@ class AuthentikPhase(Phase):
             "AUTHENTIK_SECRET_KEY / bootstrap admin password / bootstrap API token: "
             "generated once, pinned in state, identical everywhere, never printed",
         ]
+        warning = tag_change_warning(ctx, self.name, cfg.authentik_tag)
+        if warning:
+            lines.append(warning)
         ecfg = self._acfg(ctx).get("email")
         if ecfg is not None and not ecfg.get("enabled", True):
             lines.append("SMTP email: disabled in site config — no AUTHENTIK_EMAIL__* block")
@@ -398,6 +431,8 @@ class AuthentikPhase(Phase):
         branding = acfg.get("branding") or {}
         if branding:
             apply_brand(ctx, ctx.fleet.conns[0], branding, sec["bootstrap_token"])
+
+        pin_applied_tag(ctx, self.name, cfg.authentik_tag)
 
     # ---------------------------------------------------------------- verify
     def verify(self, ctx: PhaseContext) -> bool:
