@@ -138,61 +138,21 @@ echo "==> writing third-party license manifest"
 # sync, listing every vendored dependency's declared license. The full license
 # texts themselves already travel inside the archive (see above); this is the
 # human-readable index of what's in there and under what terms, shipped
-# alongside the binary as dist/THIRD_PARTY_LICENSES.md.
-"$PY" - "$BUILD" <<'EOF' > "$DIST/THIRD_PARTY_LICENSES.md"
-import pathlib, re, sys
+# alongside the binary as dist/THIRD_PARTY_LICENSES.md. Shares its row/render
+# logic with `akropolis licenses` (akropolis/licenses.py) so the two listings
+# can't drift apart.
+NOTE="akropolis (MIT) is distributed as a single-file zipapp that also carries the pure-Python packages it depends on -- their source ships inside this archive, not just akropolis's own. Each package's full license text ships alongside it, under the paths listed below; this file is the index, not a substitute for those texts.
+
+paramiko is LGPL-2.1: the version bundled here is unmodified, readable Python source, sitting in this same archive next to the license that covers it."
+PYTHONPATH="$ROOT" "$PY" - "$BUILD" "$NOTE" <<'EOF' > "$DIST/THIRD_PARTY_LICENSES.md"
+import pathlib, sys
+
+from akropolis import licenses
 
 root = pathlib.Path(sys.argv[1])
-
-
-def declared_license(meta_text: str) -> str:
-    m = re.search(r'^License-Expression:\s*(.+)$', meta_text, re.M)
-    if m:
-        return m.group(1).strip()
-    m = re.search(r'^License:\s*(.+)$', meta_text, re.M)
-    if m and m.group(1).strip() and m.group(1).strip().upper() != "UNKNOWN":
-        return m.group(1).strip()
-    m = re.search(r'^Classifier:\s*License :: OSI Approved :: (.+)$', meta_text, re.M)
-    if m:
-        return m.group(1).strip()
-    return "unknown -- see embedded license file"
-
-
-rows = []
-for d in sorted(root.glob("*.dist-info")):
-    name, _, version = d.name[: -len(".dist-info")].rpartition("-")
-    if name.lower() == "akropolis":
-        continue
-    meta_path = d / "METADATA"
-    meta = meta_path.read_text(errors="replace") if meta_path.exists() else ""
-    lic = declared_license(meta)
-    lic_files = sorted(
-        p.relative_to(root)
-        for p in d.rglob("*")
-        if p.is_file() and re.match(r"(?i)^(LICEN[CS]E|COPYING|NOTICE|AUTHORS)", p.name)
-    )
-    rows.append((name, version, lic, lic_files))
-
-print("# Third-party licenses")
-print()
-print("akropolis (MIT) is distributed as a single-file zipapp that also")
-print("carries the pure-Python packages it depends on -- their source ships")
-print("inside this archive, not just akropolis's own. Each package's full")
-print("license text ships alongside it, under the paths listed below; this")
-print("file is the index, not a substitute for those texts.")
-print()
-print("paramiko is LGPL-2.1: the version bundled here is unmodified,")
-print("readable Python source, sitting in this same archive next to the")
-print("license that covers it.")
-print()
-print("| Package | Version | License | License file(s) in this archive |")
-print("| :--- | :--- | :--- | :--- |")
-for name, version, lic, lic_files in rows:
-    if lic_files:
-        paths = "<br>".join(f"`{f}`" for f in lic_files)
-    else:
-        paths = "*(none shipped by upstream)*"
-    print(f"| {name} | {version} | {lic} | {paths} |")
+note = sys.argv[2]
+rows = licenses.rows_from_dist_info_dir(root)
+sys.stdout.write(licenses.render(rows, note=note))
 EOF
 
 echo "==> writing manifest"

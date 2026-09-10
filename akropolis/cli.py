@@ -11,6 +11,7 @@
     akropolis update                    # install the latest release (zipapp binary only)
     akropolis check-update              # check for a newer release without installing it
     akropolis whats-new                 # show the changelog for the installed version
+    akropolis licenses                  # show third-party license info
 """
 
 from __future__ import annotations
@@ -331,6 +332,13 @@ def cmd_check_update(args: argparse.Namespace) -> int:
     return check_update_now(__version__)
 
 
+def cmd_licenses(args: argparse.Namespace) -> int:
+    from . import licenses
+
+    console.print(Markdown(licenses.report()))
+    return 0
+
+
 def cmd_whats_new(args: argparse.Namespace) -> int:
     text = changelog.load()
     if args.all:
@@ -410,6 +418,10 @@ def main(argv: list[str] | None = None) -> int:
                                     "whether a newer akropolis release exists, without "
                                     "installing it; exit 1 if one is available")
     p_check_update.set_defaults(func=cmd_check_update)
+
+    p_licenses = sub.add_parser("licenses", help="show third-party license info for "
+                                "every package actually bundled/installed right now")
+    p_licenses.set_defaults(func=cmd_licenses)
 
     p_whats_new = sub.add_parser("whats-new", help="show the CHANGELOG.md entry for "
                                  "the installed version")

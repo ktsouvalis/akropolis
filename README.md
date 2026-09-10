@@ -32,11 +32,12 @@ depends on (paramiko, Jinja2, PyYAML, rich, textual, requests, urllib3 and
 their own dependencies) — their source ships inside that single file, not
 just akropolis's own. Each release publishes a `THIRD_PARTY_LICENSES.md`
 alongside the binary indexing every bundled package's license, and the full
-license text for each ships in the archive next to it. paramiko is
-LGPL-2.1; requests is Apache-2.0; everything else bundled is MIT/BSD.
-`psycopg2`, used only by `akropolis monitor`'s PostgreSQL panel, is supplied
-by the system (`python3-psycopg2`) rather than bundled — see
-[Install](#install).
+license text for each ships in the archive next to it; `akropolis licenses`
+prints the same listing from whatever is actually installed/bundled in the
+copy you're running. paramiko is LGPL-2.1; requests is Apache-2.0;
+everything else bundled is MIT/BSD. `psycopg2`, used only by `akropolis
+monitor`'s PostgreSQL panel, is supplied by the system (`python3-psycopg2`)
+rather than bundled — see [Install](#install).
 
 ## Status
 
@@ -186,6 +187,10 @@ akropolis whats-new                 show the CHANGELOG.md entry for the
                                        installed version
   --version VERSION                    show the entry for a specific version
   --all                                show the full changelog
+
+akropolis licenses                  show third-party license info for every
+                                       package actually bundled/installed
+                                       right now
 ```
 
 `CONFIG` means `config.<site>.yml` (the file `init` writes and `provision`
@@ -668,5 +673,5 @@ This repository's commit history begins at v1.0.1. History prior to this point i
 
 MIT. Third-party components bundled inside the release binary are under
 their own licenses — see `THIRD_PARTY_LICENSES.md` published with each
-release, or the [Architecture deployed](#architecture-deployed) section
-above.
+release, `akropolis licenses`, or the [Architecture
+deployed](#architecture-deployed) section above.

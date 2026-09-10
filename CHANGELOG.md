@@ -11,6 +11,18 @@ dead ends.
 
 ## [Unreleased]
 
+## [1.7.0] - 2026-09-10
+
+### Added
+
+- `akropolis licenses`: print a third-party license listing for whatever is
+  actually importable in the running copy right now — installed
+  dependencies for a pip install, or the packages bundled inside the
+  archive for a zipapp binary. Shares its row/render logic
+  (`akropolis/licenses.py`) with the `THIRD_PARTY_LICENSES.md` that
+  `tools/build_pyz.sh` generates for each release, so the two listings
+  can't drift apart.
+
 ## [1.6.0] - 2026-09-10
 
 ### Added
