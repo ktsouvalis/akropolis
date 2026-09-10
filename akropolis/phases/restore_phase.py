@@ -50,7 +50,8 @@ import shlex
 import time
 from pathlib import Path
 
-from .authentik_phase import apply_brand, dump_logs, wait_healthy, wait_one_healthy
+from .authentik_phase import (apply_brand, dump_logs, remint_bootstrap_token,
+                              token_alive, wait_healthy, wait_one_healthy)
 from .base import Phase, PhaseContext
 
 PSQL = "sudo -u postgres psql -h /var/run/postgresql -p 5432 -v ON_ERROR_STOP=1"
@@ -437,21 +438,26 @@ GRANT ALL ON SCHEMA public TO {owner};
         # its own lookup gets a 401 and reports "could not find the default
         # brand" — which is misleading (the brand is fine; the token just
         # isn't valid against the database that was just loaded).
+        #
+        # Recoverable without an operator editing state by hand: re-mint the
+        # SAME pinned value into the restored database through the worker's
+        # ORM (see authentik_phase.remint_bootstrap_token) before reporting
+        # it dead — this is the identical move restore_single_phase.py
+        # already makes for single-node sites.
         token = ctx.state.data["generated"].get("authentik_bootstrap_token", "")
         tok_ok = True
         if token:
-            r = ctx.fleet.conns[0].run(
-                f"curl -sk -H {shlex.quote('Authorization: Bearer ' + token)} "
-                "-o /dev/null -w '%{http_code}' "
-                "https://127.0.0.1:9443/api/v3/admin/version/", timeout=30)
-            tok_ok = r.out.strip() == "200"
+            conn0 = ctx.fleet.conns[0]
+            tok_ok = token_alive(conn0, token)
+            if not tok_ok:
+                tok_ok = remint_bootstrap_token(ctx, conn0, token)
             ctx.record("cluster", "bootstrap API token still valid", tok_ok,
-                       f"HTTP {r.out}" if tok_ok else
-                       f"HTTP {r.out} — the restored database does not contain this "
-                       "token. Create a new one (akadmin > Directory > Tokens, admin "
-                       "scope) and put it in the monitor config, or its Workers and "
-                       "Worker Queue panels will read 'unauthorized'",
-                       warn=not tok_ok)
+                       "" if tok_ok else
+                       "the restored database does not contain this token and "
+                       "re-minting it did not recover it. Create a new one (akadmin > "
+                       "Directory > Tokens, admin scope) and put it in the monitor "
+                       "config, or its Workers and Worker Queue panels will read "
+                       "'unauthorized'", warn=not tok_ok)
 
         # The restored dump carries its OWN brand row, which may point at assets
         # this cluster does not have (broken image on the login page) or at the

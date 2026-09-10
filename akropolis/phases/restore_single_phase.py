@@ -45,7 +45,8 @@ import time
 from pathlib import Path
 
 from .authentik_certs_phase import set_web_certificate
-from .authentik_phase import apply_brand, dump_logs, wait_healthy, wait_one_healthy
+from .authentik_phase import (apply_brand, dump_logs, remint_bootstrap_token,
+                              token_alive, wait_healthy, wait_one_healthy)
 from .base import Phase, PhaseContext
 
 DB = "authentik"      # fixed — matches PG_DB in authentik-single-env.j2
@@ -293,9 +294,9 @@ class RestoreSinglePhase(Phase):
         # (the only path that does not need a working token to begin with),
         # then redo 2 and 3 exactly as the earlier phases did.
         token = ctx.state.data["generated"].get("authentik_bootstrap_token", "")
-        tok_ok_now = self._token_alive(ctx, conn, token) if token else False
+        tok_ok_now = token_alive(conn, token, port=443) if token else False
         if token and not tok_ok_now:
-            tok_ok_now = self._remint_token(ctx, conn, token)
+            tok_ok_now = remint_bootstrap_token(ctx, conn, token, port=443)
 
         branding = (ctx.cfg.raw.get("authentik") or {}).get("branding") or {}
         if branding and tok_ok_now:
@@ -318,54 +319,6 @@ class RestoreSinglePhase(Phase):
                            "> Web Certificate to "
                            f"{ctx.cfg.tls.hostname!r} by hand, or the node will serve its "
                            "self-signed certificate", warn=True)
-
-    # ------------------------------------------------- post-restore recovery
-    def _token_alive(self, ctx: PhaseContext, conn, token: str) -> bool:
-        r = conn.run(f"curl -sk -H {shlex.quote('Authorization: Bearer ' + token)} "
-                     "-o /dev/null -w '%{http_code}' "
-                     "https://127.0.0.1:443/api/v3/admin/version/", timeout=30)
-        return r.out.strip() == "200"
-
-    def _remint_token(self, ctx: PhaseContext, conn, token: str) -> bool:
-        """Recreate the pinned bootstrap token inside the restored database.
-
-        Runs through `ak shell` in the worker container because that is the
-        one route that does not itself require an API token. Best-effort by
-        design: a failure here costs branding and the web certificate, both
-        of which the operator can set by hand, so it warns rather than
-        raising and taking a good restore down with it.
-        """
-        node = conn.node.name
-        py = (
-            "try:\n"
-            "    from authentik.core.models import Token, TokenIntents, User\n"
-            "except Exception as e:\n"
-            "    print('ERR import %s' % e); raise SystemExit(1)\n"
-            f"KEY = {token!r}\n"
-            "IDENT = 'akropolis-bootstrap'\n"
-            "u = User.objects.filter(username='akadmin').first() or \\\n"
-            "    User.objects.filter(is_active=True).order_by('pk').first()\n"
-            "if u is None:\n"
-            "    print('ERR no user in restored database'); raise SystemExit(1)\n"
-            "Token.objects.filter(key=KEY).exclude(identifier=IDENT).delete()\n"
-            "Token.objects.update_or_create(identifier=IDENT, defaults={\n"
-            "    'user': u, 'intent': TokenIntents.INTENT_API, 'key': KEY,\n"
-            "    'expiring': False, 'description': 'akropolis provisioning token'})\n"
-            "print('OK %s' % u.username)\n"
-        )
-        ctx.begin(node, "re-minting bootstrap token", "into the restored database")
-        r = conn.run("cd /opt/authentik && docker compose exec -T worker "
-                     f"ak shell -c {shlex.quote(py)}", timeout=180)
-        if not (r.ok and "OK " in r.out):
-            ctx.record(node, "bootstrap token re-minted", False,
-                       (r.out or r.err).splitlines()[-1] if (r.out or r.err) else "ak shell failed",
-                       warn=True)
-            return False
-        owner = r.out.rsplit("OK ", 1)[-1].strip()
-        ctx.record(node, "bootstrap token re-minted", True,
-                   f"attached to restored user {owner!r} — the token in state and in the "
-                   "monitor config keeps working")
-        return self._token_alive(ctx, conn, token)
 
     # ---------------------------------------------------------------- verify
     def verify(self, ctx: PhaseContext) -> bool:
@@ -394,16 +347,13 @@ class RestoreSinglePhase(Phase):
         token = ctx.state.data["generated"].get("authentik_bootstrap_token", "")
         tok_ok = True
         if token:
-            r = conn.run(f"curl -sk -H {shlex.quote('Authorization: Bearer ' + token)} "
-                         "-o /dev/null -w '%{http_code}' "
-                         "https://127.0.0.1:443/api/v3/admin/version/", timeout=30)
-            tok_ok = r.out.strip() == "200"
+            tok_ok = token_alive(conn, token, port=443)
             ctx.record(node, "bootstrap API token valid against restored database", tok_ok,
-                       f"HTTP {r.out}" if tok_ok else
-                       f"HTTP {r.out} — the restore replaced the database this token "
-                       "lived in and re-minting it through 'ak shell' did not take. "
-                       "Create one by hand (akadmin > Directory > Tokens, admin scope) "
-                       "and put it in the monitor config", warn=not tok_ok)
+                       "" if tok_ok else
+                       "the restore replaced the database this token lived in and "
+                       "re-minting it through 'ak shell' did not take. Create one by "
+                       "hand (akadmin > Directory > Tokens, admin scope) and put it "
+                       "in the monitor config", warn=not tok_ok)
 
         good = wait_healthy(ctx, conn, timeout=60, label="verify: healthy gate")
         ctx.record(node, "verify: containers healthy", good, "")

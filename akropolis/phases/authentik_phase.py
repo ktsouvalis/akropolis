@@ -173,6 +173,65 @@ def wait_one_healthy(ctx, conn, container: str, timeout: float,
                     tick=lambda el: ctx.tick(f"{int(el)}s / {int(timeout)}s"))
 
 
+def token_alive(conn, token: str, port: int = 9443) -> bool:
+    """Does the API accept `token` right now? Used to detect a bootstrap
+    token that has gone stale against whatever database is actually live
+    (typically: the database was replaced out from under it — a restore,
+    in or out of band — while the pinned value in state didn't change)."""
+    r = conn.run(f"curl -sk -H {shlex.quote('Authorization: Bearer ' + token)} "
+                 "-o /dev/null -w '%{http_code}' "
+                 f"https://127.0.0.1:{port}/api/v3/admin/version/", timeout=30)
+    return r.out.strip() == "200"
+
+
+def remint_bootstrap_token(ctx, conn, token: str, port: int = 9443) -> bool:
+    """Re-mint the pinned bootstrap token into whatever database is
+    currently live, through the ORM inside the worker container — the one
+    route that does not itself require a working API token.
+
+    AUTHENTIK_BOOTSTRAP_TOKEN in .env does not fix this on its own: authentik
+    only applies it when it creates akadmin, and a database that already has
+    an akadmin (any restore, in or out of band) makes that bootstrap step a
+    no-op. This re-establishes the SAME token value state already has
+    pinned, so nothing else downstream (the monitor config, this phase's own
+    branding step) needs to change.
+
+    Best-effort: a failure here is reported as a warning, not raised —
+    callers decide whether a dead token is fatal for them.
+    """
+    node = conn.node.name
+    py = (
+        "try:\n"
+        "    from authentik.core.models import Token, TokenIntents, User\n"
+        "except Exception as e:\n"
+        "    print('ERR import %s' % e); raise SystemExit(1)\n"
+        f"KEY = {token!r}\n"
+        "IDENT = 'akropolis-bootstrap'\n"
+        "u = User.objects.filter(username='akadmin').first() or \\\n"
+        "    User.objects.filter(is_active=True).order_by('pk').first()\n"
+        "if u is None:\n"
+        "    print('ERR no user in database'); raise SystemExit(1)\n"
+        "Token.objects.filter(key=KEY).exclude(identifier=IDENT).delete()\n"
+        "Token.objects.update_or_create(identifier=IDENT, defaults={\n"
+        "    'user': u, 'intent': TokenIntents.INTENT_API, 'key': KEY,\n"
+        "    'expiring': False, 'description': 'akropolis provisioning token'})\n"
+        "print('OK %s' % u.username)\n"
+    )
+    ctx.begin(node, "re-minting bootstrap token", "into the live database")
+    r = conn.run("cd /opt/authentik && docker compose exec -T worker "
+                 f"ak shell -c {shlex.quote(py)}", timeout=180)
+    if not (r.ok and "OK " in r.out):
+        ctx.record(node, "bootstrap token re-minted", False,
+                   (r.out or r.err).splitlines()[-1] if (r.out or r.err) else "ak shell failed",
+                   warn=True)
+        return False
+    owner = r.out.rsplit("OK ", 1)[-1].strip()
+    ctx.record(node, "bootstrap token re-minted", True,
+               f"attached to user {owner!r} — the token in state and in the "
+               "monitor config keeps working")
+    return token_alive(conn, token, port=port)
+
+
 def dump_logs(ctx, conn, service: str, lines: int = 40) -> None:
     """Print the tail of a container's log when a gate fails.
 
@@ -449,12 +508,26 @@ class AuthentikPhase(Phase):
             ok = ok and ready
 
         # API answers with the bootstrap token — this is the token the monitor
-        # will use, so proving it now saves a debugging session later
+        # will use, so proving it now saves a debugging session later.
+        #
+        # A live cluster whose database was replaced out from under it (a
+        # restore run outside the `restore` phase — direct pg_restore,
+        # snapshot rollback, etc.) leaves state pinned to a token the new
+        # database has never heard of: HTTP 403, not 401 (the header parses
+        # fine, the key just doesn't match any row). That is recoverable
+        # without editing state by hand — re-mint the SAME pinned value into
+        # whatever database is live now — so try that once before giving up.
         token = ctx.state.data["generated"].get("authentik_bootstrap_token", "")
-        r = ctx.fleet.conns[0].run(
-            f"curl -sk -H {shlex.quote('Authorization: Bearer ' + token)} "
-            f"-o /dev/null -w '%{{http_code}}' "
-            f"https://127.0.0.1:9443/api/v3/admin/version/")
-        api = r.out == "200"
-        ctx.record("cluster", "verify: API with bootstrap token", api, f"HTTP {r.out}")
+        conn0 = ctx.fleet.conns[0]
+        api = token_alive(conn0, token)
+        if not api:
+            ctx.record("cluster", "verify: API with bootstrap token", False,
+                       "token rejected — attempting to re-mint it into the live "
+                       "database before failing", warn=True)
+            api = remint_bootstrap_token(ctx, conn0, token)
+        ctx.record("cluster", "verify: API with bootstrap token", api,
+                   "" if api else "token rejected and re-mint did not recover it — "
+                   "create one by hand (akadmin > Directory > Tokens, admin scope) "
+                   "and put it in the monitor config, or fix `ak shell` access "
+                   "and --replay authentik")
         return ok and api
