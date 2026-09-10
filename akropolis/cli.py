@@ -5,6 +5,7 @@
     akropolis provision config.yml --replay preflight
     akropolis clean     config.yml      # tear the site down to bare VMs
     akropolis monitor   config.yml      # (stub — folds in ak-monitor later)
+    akropolis update                    # install the latest release (zipapp binary only)
 """
 
 from __future__ import annotations
@@ -21,6 +22,7 @@ from . import __version__
 from .config import ConfigError, SiteConfig, load
 from .init_wizard import run_wizard
 from .transcript import Transcript
+from .update import check_for_update, self_update
 from .phases.base import PhaseContext, run_phases
 from .phases.authentik_phase import AuthentikPhase
 from .phases.authentik_single_phase import AuthentikSinglePhase
@@ -247,6 +249,10 @@ def cmd_monitor(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_update(args: argparse.Namespace) -> int:
+    return self_update(__version__)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="akropolis", description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -276,7 +282,23 @@ def main(argv: list[str] | None = None) -> int:
     p_mon.add_argument("config", help="path to config.<site>.yml")
     p_mon.set_defaults(func=cmd_monitor)
 
+    p_update = sub.add_parser("update", help="download and install the latest akropolis "
+                              "release (zipapp binary only)")
+    p_update.set_defaults(func=cmd_update)
+
     args = parser.parse_args(argv)
+
+    if args.command != "update":
+        try:
+            latest = check_for_update(__version__)
+        except Exception:  # noqa: BLE001 -- a version check must never break a real command
+            latest = None
+        if latest:
+            console.print(
+                f"[yellow]a new akropolis release is available: "
+                f"{__version__} → {latest}[/yellow] [dim](run `akropolis update`)[/dim]"
+            )
+
     return args.func(args)
 
 

@@ -11,6 +11,18 @@ dead ends.
 
 ## [Unreleased]
 
+### Added
+
+- Every command now checks GitHub for a newer release (cached 24h, silent on
+  network failure) and prints a notice if one's available. `akropolis update`
+  downloads the latest release binary, verifies it against `SHA256SUMS`, and
+  replaces the running zipapp in place.
+- The `authentik` phase's plan now warns when `authentik.tag` differs from
+  the tag it last successfully applied, and the README documents the
+  upgrade path (`--replay authentik` after bumping the tag) along with what
+  akropolis does *not* do for you: take a backup, or check Authentik's own
+  version-skip rules.
+
 ## [1.0.3] - 2026-09-10
 
 ### Fixed

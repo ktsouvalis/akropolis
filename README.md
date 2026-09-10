@@ -146,7 +146,16 @@ akropolis provision CONFIG          run the phase pipeline (resumable)
 akropolis provision CONFIG --only PHASE [PHASE...]     run only named phases
 akropolis provision CONFIG --replay PHASE [PHASE...]   re-run completed phases
 akropolis monitor CONFIG            (stub) will run the monitoring TUI
+akropolis update                    install the latest release (zipapp binary only)
 ```
+
+Every command checks GitHub for a newer release (cached for 24h) and prints a
+one-line notice if one is available; it never blocks or fails a command if
+the check can't reach the network. `akropolis update` downloads the latest
+`akropolis` binary, verifies it against the release's `SHA256SUMS`, and
+replaces the running file in place. It only works on the zipapp binary from
+GitHub releases — a source/pip install should use `git pull` / `pip install
+-U` instead.
 
 ## The phase model
 
