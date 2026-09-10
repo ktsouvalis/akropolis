@@ -193,11 +193,16 @@ site](#cleaning-a-site) for `--only`/`--replay`/`--i-know-this-is-production`.
 
 Every command checks GitHub for a newer release (cached for 24h) and prints a
 one-line notice if one is available; it never blocks or fails a command if
-the check can't reach the network. `akropolis update` downloads the latest
-`akropolis` binary, verifies it against the release's `SHA256SUMS`, and
-replaces the running file in place. It only works on the zipapp binary from
-GitHub releases — a source/pip install should use `git pull` / `pip install
--U` instead.
+the check can't reach the network. `akropolis check-update` forces a fresh,
+uncached check and reports a definite answer, exiting 1 if a release is
+available — useful from a script or cron rather than waiting for the notice.
+`akropolis update` downloads the latest `akropolis` binary, verifies it
+against the release's `SHA256SUMS`, and replaces the running file in place.
+It only works on the zipapp binary from GitHub releases — a source/pip
+install should use `git pull` / `pip install -U` instead. It needs write
+access to the directory the binary lives in: fine for `~/.local/bin`, but
+`sudo akropolis update` if it was installed to `/usr/local/bin` (root-owned
+by default) rather than a user-writable location.
 
 ## The phase model
 
