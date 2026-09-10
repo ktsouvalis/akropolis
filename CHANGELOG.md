@@ -11,6 +11,15 @@ dead ends.
 
 ## [Unreleased]
 
+## [1.6.0] - 2026-09-10
+
+### Added
+
+- `akropolis whats-new`: print the CHANGELOG.md entry for the installed
+  version (`--version` for another one, `--all` for the full file). The file
+  now ships inside the package/zipapp (`akropolis/CHANGELOG.md` symlinks to
+  the repo-root copy so there is still only one file to keep current).
+
 ## [1.5.0] - 2026-09-10
 
 ### Added

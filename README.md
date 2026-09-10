@@ -181,6 +181,11 @@ akropolis logs CONFIG               cluster-wide log viewer over SSH (ha topolog
 
 akropolis update                    download and install the latest release
                                        (zipapp binary only)
+
+akropolis whats-new                 show the CHANGELOG.md entry for the
+                                       installed version
+  --version VERSION                    show the entry for a specific version
+  --all                                show the full changelog
 ```
 
 `CONFIG` means `config.<site>.yml` (the file `init` writes and `provision`

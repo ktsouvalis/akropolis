@@ -151,8 +151,9 @@ def load(path: str | Path) -> SiteConfig:
         raise ConfigError([
             f"site.config_version is {raw_version}, this akropolis expects "
             f"{CONFIG_SCHEMA_VERSION}. Config-affecting changes landed between those "
-            f"versions -- check CHANGELOG.md, update the file accordingly, then bump "
-            f"config_version to {CONFIG_SCHEMA_VERSION}."
+            f"versions -- check CHANGELOG.md (or run `akropolis whats-new --all`), "
+            f"update the file accordingly, then bump config_version to "
+            f"{CONFIG_SCHEMA_VERSION}."
         ])
     if raw_version > CONFIG_SCHEMA_VERSION:
         raise ConfigError([

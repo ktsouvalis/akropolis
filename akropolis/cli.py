@@ -10,6 +10,7 @@
     akropolis logs      config.yml      # cluster-wide log viewer (SSH), --save to download
     akropolis update                    # install the latest release (zipapp binary only)
     akropolis check-update              # check for a newer release without installing it
+    akropolis whats-new                 # show the changelog for the installed version
 """
 
 from __future__ import annotations
@@ -21,8 +22,10 @@ import time
 from pathlib import Path
 
 from rich.console import Console
+from rich.markdown import Markdown
 
 from . import __version__
+from . import changelog
 from .config import ConfigError, SiteConfig, load
 from .init_wizard import run_wizard
 from .transcript import Transcript
@@ -328,6 +331,22 @@ def cmd_check_update(args: argparse.Namespace) -> int:
     return check_update_now(__version__)
 
 
+def cmd_whats_new(args: argparse.Namespace) -> int:
+    text = changelog.load()
+    if args.all:
+        console.print(Markdown(text))
+        return 0
+
+    version = args.version or __version__
+    entry = changelog.entry_for(version, text)
+    if entry is None:
+        console.print(f"[yellow]no changelog entry for {version}.[/yellow] "
+                      "Run `akropolis whats-new --all` for the full history.")
+        return 1
+    console.print(Markdown(entry))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="akropolis", description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -391,6 +410,15 @@ def main(argv: list[str] | None = None) -> int:
                                     "whether a newer akropolis release exists, without "
                                     "installing it; exit 1 if one is available")
     p_check_update.set_defaults(func=cmd_check_update)
+
+    p_whats_new = sub.add_parser("whats-new", help="show the CHANGELOG.md entry for "
+                                 "the installed version")
+    p_whats_new.add_argument("--all", action="store_true",
+                             help="show the full changelog instead of just this version")
+    p_whats_new.add_argument("--version", metavar="VERSION",
+                             help="show the entry for a specific version instead of "
+                             "the one installed")
+    p_whats_new.set_defaults(func=cmd_whats_new)
 
     args = parser.parse_args(argv)
 
