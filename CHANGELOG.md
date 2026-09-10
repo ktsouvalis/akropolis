@@ -11,6 +11,18 @@ dead ends.
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-09-10
+
+### Added
+
+- The `authentik` phase and the `restore` phase now self-heal a bootstrap
+  API token left dead by a database restore (in-phase, or done out of band
+  and picked up via `--replay authentik`): before failing, `verify` re-mints
+  the token already pinned in state into the live database through `ak
+  shell` — the same recovery `restore` (single-node) already did. The token
+  value never changes, so an existing monitor config keeps working with no
+  manual `.state/<name>.json` edit and no `--replay handoff` needed.
+
 ## [1.2.0] - 2026-09-10
 
 ### Added
