@@ -11,6 +11,8 @@ dead ends.
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-09-10
+
 ### Added
 
 - Every command now checks GitHub for a newer release (cached 24h, silent on
