@@ -3,6 +3,8 @@
     akropolis init                      # interactive wizard → config.<site>.yml
     akropolis provision config.yml      # phase runner (resumable)
     akropolis provision config.yml --replay preflight
+    akropolis shutdown  config.yml      # gracefully stop the authentik backend(s)
+    akropolis start      config.yml     # bring them back — requires a prior shutdown
     akropolis clean     config.yml      # tear the site down to bare VMs
     akropolis monitor   config.yml      # (stub — folds in ak-monitor later)
     akropolis update                    # install the latest release (zipapp binary only)
@@ -27,6 +29,7 @@ from .phases.base import PhaseContext, run_phases
 from .phases.authentik_phase import AuthentikPhase
 from .phases.authentik_single_phase import AuthentikSinglePhase
 from .phases.authentik_certs_phase import AuthentikCertsPhase
+from .phases.authentik_lifecycle import AuthentikShutdownPhase, AuthentikStartPhase
 from .phases.restore_single_phase import RestoreSinglePhase
 from .phases.handoff_single_phase import HandoffSinglePhase
 from .phases.base_setup import BasePhase
@@ -183,6 +186,61 @@ def cmd_provision(args: argparse.Namespace) -> int:
     return 0 if ok else 1
 
 
+def _lifecycle_cmd(args: argparse.Namespace, phase, command: str) -> int:
+    """Shared driver for `shutdown`/`start`: same connect/confirm/run shape as
+    `provision`, but for a single ad-hoc phase outside the pipeline. Works on
+    both topologies — the phase itself scopes the docker compose command
+    (unscoped on ha, `server worker` on single, to leave postgresql running).
+    """
+    try:
+        cfg = load(args.config)
+    except ConfigError as exc:
+        console.print("[red]config problems:[/red]")
+        for p in exc.problems:
+            console.print(f"  ✘ {p}")
+        return 2
+
+    state = State(cfg.state_file, cfg.name)
+    transcript = Transcript(_transcript_path(cfg, command))
+    console.print(f"[dim]transcript: {transcript.path} "
+                  "(every command run on every node this session — mode 0600)[/dim]")
+
+    password = None
+    if cfg.ssh.auth == "password":
+        password = getpass.getpass(f"SSH password for {cfg.ssh.user}: ")
+    sudo_password = None
+    if cfg.ssh.become:
+        hint = ("Enter = reuse SSH password" if password
+                else "Enter = try passwordless sudo")
+        sudo_password = getpass.getpass(
+            f"sudo password for {cfg.ssh.user} ({hint}): ") or password
+
+    fleet = Fleet(cfg.nodes, cfg.ssh, password, sudo_password, transcript=transcript)
+    if not _preauth_sudo(cfg, fleet, password):
+        fleet.close()
+        transcript.close()
+        return 2
+    ctx = PhaseContext(cfg=cfg, state=state, fleet=fleet)
+
+    try:
+        # replay=True: these are ad-hoc operational commands, not resumable
+        # pipeline steps — a prior "done" must never make a later invocation
+        # a silent no-op.
+        ok = run_phases([phase], ctx, replay=True)
+    finally:
+        fleet.close()
+        transcript.close()
+    return 0 if ok else 1
+
+
+def cmd_shutdown(args: argparse.Namespace) -> int:
+    return _lifecycle_cmd(args, AuthentikShutdownPhase(), "shutdown")
+
+
+def cmd_start(args: argparse.Namespace) -> int:
+    return _lifecycle_cmd(args, AuthentikStartPhase(), "start")
+
+
 def cmd_clean(args: argparse.Namespace) -> int:
     try:
         cfg = load(args.config)
@@ -270,6 +328,17 @@ def main(argv: list[str] | None = None) -> int:
     p_prov.add_argument("--only", nargs="+", metavar="PHASE",
                         help="run only the named phase(s), e.g. --only preflight")
     p_prov.set_defaults(func=cmd_provision)
+
+    p_shutdown = sub.add_parser("shutdown", help="gracefully stop the authentik "
+                                "server+worker (ha: on all 3 nodes, other services "
+                                "left running; single: postgresql left running)")
+    p_shutdown.add_argument("config", help="path to config.<site>.yml")
+    p_shutdown.set_defaults(func=cmd_shutdown)
+
+    p_start = sub.add_parser("start", help="start the authentik backend(s) again — "
+                             "refuses unless `shutdown` last completed gracefully")
+    p_start.add_argument("config", help="path to config.<site>.yml")
+    p_start.set_defaults(func=cmd_start)
 
     p_clean = sub.add_parser("clean", help="tear the site down to bare VMs "
                              "(reverse build order; typed site-name confirmation)")

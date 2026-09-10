@@ -78,7 +78,10 @@ class NginxKeepalivedPhase(Phase):
         cfg = ctx.cfg
         prios = self._priorities(ctx)
         lines = [
-            "create /opt/nginx/{conf,certs,logs} and the certbot webroot on all nodes",
+            "create /opt/nginx/{conf,certs,logs,html} and the certbot webroot on all nodes",
+            "push a static bilingual (Greek/English) maintenance.html to every node — "
+            "served whenever ALL authentik backends are unreachable (502/503/504), "
+            "with the real status code preserved so monitoring still sees the outage",
             "render nginx.conf per node (identical except the per-node /monitor JSON): "
             + ("HTTP->HTTPS redirect with ACME exception, TLS proxy :443 -> "
                "least_conn authentik_backend :9443"
@@ -115,13 +118,21 @@ class NginxKeepalivedPhase(Phase):
         cfg = ctx.cfg
         compose = resources.files("akropolis.templates") \
             .joinpath("nginx-compose.yml").read_text()
+        maintenance = resources.files("akropolis.templates") \
+            .joinpath("maintenance.html").read_text()
 
         # --- nginx on all nodes -------------------------------------------
         for conn in ctx.fleet:
             node = conn.node.name
             r = conn.run("mkdir -p /opt/nginx/conf /opt/nginx/certs /opt/nginx/logs "
-                         "/var/www/certbot/.well-known/acme-challenge")
+                         "/opt/nginx/html /var/www/certbot/.well-known/acme-challenge")
             ctx.record(node, "directories", r.ok, r.err if not r.ok else "")
+
+            # Static, not part of the down&&up change-gate below: nginx reads
+            # it straight off disk per-request (no open_file_cache
+            # configured), so a content-only push takes effect immediately
+            # without cycling the container.
+            push_file(conn, maintenance, "/opt/nginx/html/maintenance.html")
 
             conf = render("nginx.conf.j2",
                           node=conn.node, nodes=cfg.nodes,

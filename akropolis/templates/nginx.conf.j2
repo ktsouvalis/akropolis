@@ -99,6 +99,18 @@ http {
             proxy_buffer_size  128k;
             proxy_buffers      4 256k;
             proxy_read_timeout 90s;
+
+            # All 3 backends unreachable (akropolis shutdown, or an actual
+            # outage) -> a friendly page instead of nginx's bare error body.
+            # No `=200` override: the real 502/503/504 status is kept, so
+            # uptime/alerting monitoring still correctly sees the outage —
+            # only what a human looking at a browser sees changes.
+            proxy_intercept_errors on;
+            error_page 502 503 504 /maintenance.html;
+        }
+
+        location = /maintenance.html {
+            root /usr/share/nginx/html;
         }
 
         # Monitor endpoint - identifies which node currently holds the VIP

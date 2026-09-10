@@ -8,4 +8,5 @@ services:
       - /opt/nginx/conf/nginx.conf:/etc/nginx/nginx.conf:ro
       - /opt/nginx/certs:/etc/nginx/certs:ro
       - /opt/nginx/logs:/var/log/nginx
+      - /opt/nginx/html:/usr/share/nginx/html:ro
       - /var/www/certbot:/var/www/certbot:ro
