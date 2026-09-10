@@ -18,6 +18,19 @@ VALID_TLS_PROVIDERS = {"none", "self_signed", "acme", "import"}
 VALID_SSH_AUTH = {"key", "agent", "password"}
 VALID_TOPOLOGIES = {"ha", "single"}
 
+# Bump whenever a config-file change needs operator action to carry
+# forward -- a renamed/removed key, a default that would silently change
+# behavior, a key that becomes required. A purely additive key with a safe
+# fallback (like authentik_tag's topology-aware default) does NOT need a
+# bump. `load()` refuses to run against a config whose site.config_version
+# doesn't match this, pointing at CHANGELOG.md instead of guessing intent
+# from a stale file. Record what each bump was about here:
+#
+#   1 : baseline -- introduces config_version tracking itself. Every
+#       config predating this must add `site.config_version: 1` after
+#       confirming it matches the schema described in config.example.yml.
+CONFIG_SCHEMA_VERSION = 1
+
 # Default Authentik image tag per topology. Kept separate deliberately: the
 # 3-node HA cluster stays pinned to 2026.5.6 (2026.8.0 hit an embedded-outpost
 # restart loop specific to multi-node deployments — see akropolis NOTES.md /
@@ -93,6 +106,7 @@ class SiteConfig:
     network: NetworkConfig
     tls: TLSConfig
     state_file: Path
+    config_version: int = CONFIG_SCHEMA_VERSION
     refuse_existing: bool = True
     authentik_tag: str = "2026.5.6"
     raw: dict = field(default_factory=dict)
@@ -118,6 +132,34 @@ def load(path: str | Path) -> SiteConfig:
 
     with open(path) as f:
         raw = yaml.safe_load(f) or {}
+
+    # Checked before anything else: a version mismatch means the rest of
+    # this function is validating the file against the wrong schema, so a
+    # pile of unrelated-looking errors below would only confuse the real
+    # problem. See CONFIG_SCHEMA_VERSION above for the bump policy.
+    raw_version = _get(raw, "site.config_version")
+    if raw_version is None:
+        raise ConfigError([
+            f"site.config_version is missing. This config predates akropolis' "
+            f"config-version tracking. Check CHANGELOG.md for any config-affecting "
+            f"changes, update the file to match config.example.yml's current shape, "
+            f"then add `config_version: {CONFIG_SCHEMA_VERSION}` to the site: block."
+        ])
+    if not isinstance(raw_version, int) or isinstance(raw_version, bool) or raw_version < 0:
+        raise ConfigError([f"site.config_version must be a non-negative integer, got {raw_version!r}"])
+    if raw_version < CONFIG_SCHEMA_VERSION:
+        raise ConfigError([
+            f"site.config_version is {raw_version}, this akropolis expects "
+            f"{CONFIG_SCHEMA_VERSION}. Config-affecting changes landed between those "
+            f"versions -- check CHANGELOG.md, update the file accordingly, then bump "
+            f"config_version to {CONFIG_SCHEMA_VERSION}."
+        ])
+    if raw_version > CONFIG_SCHEMA_VERSION:
+        raise ConfigError([
+            f"site.config_version is {raw_version}, this akropolis only understands up "
+            f"to {CONFIG_SCHEMA_VERSION}. This config was written for a newer akropolis "
+            f"release -- run `akropolis update` before provisioning."
+        ])
 
     problems: list[str] = []
 
@@ -271,6 +313,7 @@ def load(path: str | Path) -> SiteConfig:
         network=net,
         tls=tls,
         state_file=state_file,
+        config_version=raw_version,
         refuse_existing=bool(_get(raw, "provision.refuse_existing", True)),
         authentik_tag=str(_get(raw, "authentik.tag", DEFAULT_AUTHENTIK_TAG[topology])),
         raw=raw,

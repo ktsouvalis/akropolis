@@ -106,6 +106,39 @@ def _download(url: str) -> bytes:
         return resp.read()
 
 
+def check_update_now(current_version: str) -> int:
+    """Force a fresh check against GitHub and report the result unconditionally.
+
+    Unlike check_for_update() -- which is cached, throttled, and silent when
+    already current -- this always hits the network (bypassing the cache) and
+    always prints a definite answer. Used by the `check-update` subcommand,
+    including from scripts/cron via the exit code: 0 up to date, 1 an update
+    is available, 2 the check itself failed (network/parse error).
+    """
+    console.print("checking latest release…")
+    release = _fetch_latest_release(CHECK_TIMEOUT_SECONDS)
+    if release is None:
+        console.print("[red]could not reach GitHub to check the latest release.[/red]")
+        return 2
+
+    latest = release.get("tag_name", "").lstrip("v")
+    if not latest:
+        console.print("[red]unexpected response from GitHub — no tag_name on the latest release.[/red]")
+        return 2
+
+    _write_cache({"last_checked": time.time(), "latest": latest})
+
+    if _is_newer(latest, current_version):
+        console.print(
+            f"[yellow]a new akropolis release is available: "
+            f"{current_version} → {latest}[/yellow] [dim](run `akropolis update`)[/dim]"
+        )
+        return 1
+
+    console.print(f"already up to date (akropolis {current_version}).")
+    return 0
+
+
 def self_update(current_version: str) -> int:
     exe_path = _running_executable_path()
     if exe_path is None or not zipfile.is_zipfile(exe_path):

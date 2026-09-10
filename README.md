@@ -212,13 +212,14 @@ Progress is recorded in a per-site state file (see below), so a re-run skips com
 
 ## Configuration file
 
-One YAML file per site is the single source of truth; `init` is just a convenient way to produce it. See [`config.example.yml`](config.example.yml) for the annotated full reference. The essentials:
+One YAML file per site is the single source of truth; `init` is just a convenient way to produce it. See [`config.example.yml`](config.example.yml) for the annotated full reference. `site.config_version` pins the file to the schema a given akropolis release expects — `load()` refuses to run on a mismatch instead of guessing at a renamed or newly-required key; see [CHANGELOG.md](CHANGELOG.md) and `CONFIG_SCHEMA_VERSION` in `akropolis/config.py` when bumping it. The essentials:
 
 ```yaml
 site:
   name: example-site        # used in state, prompts, emitted monitor config
   environment: lab          # lab | production (production hardens confirmations,
                             #                   refuses tls provider "none")
+  config_version: 1         # config-file schema version; see above
   # topology: ha            # ha (default, 3 nodes below) | single (1 node, no VIP,
                             #   PostgreSQL as a container, see "Topology" below)
 provision:

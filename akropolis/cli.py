@@ -9,6 +9,7 @@
     akropolis monitor   config.yml      # real-time cluster health dashboard
     akropolis logs      config.yml      # cluster-wide log viewer (SSH), --save to download
     akropolis update                    # install the latest release (zipapp binary only)
+    akropolis check-update              # check for a newer release without installing it
 """
 
 from __future__ import annotations
@@ -25,7 +26,7 @@ from . import __version__
 from .config import ConfigError, SiteConfig, load
 from .init_wizard import run_wizard
 from .transcript import Transcript
-from .update import check_for_update, self_update
+from .update import check_for_update, check_update_now, self_update
 from .phases.base import PhaseContext, run_phases
 from .phases.authentik_phase import AuthentikPhase
 from .phases.authentik_single_phase import AuthentikSinglePhase
@@ -323,6 +324,10 @@ def cmd_update(args: argparse.Namespace) -> int:
     return self_update(__version__)
 
 
+def cmd_check_update(args: argparse.Namespace) -> int:
+    return check_update_now(__version__)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="akropolis", description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -382,9 +387,14 @@ def main(argv: list[str] | None = None) -> int:
                               "release (zipapp binary only)")
     p_update.set_defaults(func=cmd_update)
 
+    p_check_update = sub.add_parser("check-update", help="check (bypassing the cache) "
+                                    "whether a newer akropolis release exists, without "
+                                    "installing it; exit 1 if one is available")
+    p_check_update.set_defaults(func=cmd_check_update)
+
     args = parser.parse_args(argv)
 
-    if args.command != "update":
+    if args.command not in ("update", "check-update"):
         try:
             latest = check_for_update(__version__)
         except Exception:  # noqa: BLE001 -- a version check must never break a real command

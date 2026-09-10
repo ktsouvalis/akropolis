@@ -13,6 +13,11 @@ site:
   environment: lab                # lab | production
                                   #   production: every apply phase requires typing the
                                   #   site name to confirm; --force is ignored.
+  config_version: 1               # pins this file to the config shape akropolis expects.
+                                  #   `provision`/`shutdown`/`start`/`clean` refuse to run
+                                  #   on a mismatch rather than guess at a renamed/removed
+                                  #   key -- see CHANGELOG.md and CONFIG_SCHEMA_VERSION in
+                                  #   akropolis/config.py before bumping it by hand.
   description: "Example throwaway test cluster (VLAN 700)"
   # topology: ha                  # ha (default) | single
                                   #   ha: the 3-node stack below (etcd/Patroni/HAProxy/

@@ -11,6 +11,26 @@ dead ends.
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-09-10
+
+### Added
+
+- `akropolis check-update`: force a fresh (cache-bypassing) check against
+  GitHub and report a definite up-to-date/update-available answer, unlike
+  the passive per-command nudge which is throttled and silent when current.
+  Exits 1 when an update is available, for use in scripts/cron.
+- `site.config_version`, required in every site config now. Previously a
+  release that changed what the config file needed to say (a renamed key, a
+  new required field, a default that would silently mean something
+  different) had nothing to enforce that an existing config actually got
+  updated — `load()` would either misbehave silently or fail with an error
+  that didn't explain why. `load()` now refuses to run unless
+  `site.config_version` matches `CONFIG_SCHEMA_VERSION` (akropolis/config.py),
+  and says what to do instead of guessing: check CHANGELOG.md for what
+  changed between the two versions, update the file, then bump the number.
+  Existing configs need `config_version: 1` added by hand; `init` and
+  `config.example.yml` already carry it.
+
 ## [1.4.0] - 2026-09-10
 
 ### Added

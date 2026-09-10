@@ -12,7 +12,7 @@ from pathlib import Path
 import yaml
 from rich.console import Console
 
-from .config import DEFAULT_AUTHENTIK_TAG
+from .config import CONFIG_SCHEMA_VERSION, DEFAULT_AUTHENTIK_TAG
 
 console = Console()
 
@@ -182,7 +182,8 @@ def run_wizard(output: str | None = None) -> Path:
     # reason, not because it was forgotten.
 
     cfg = {
-        "site": {"name": site, "environment": env, "topology": topology},
+        "site": {"name": site, "environment": env, "topology": topology,
+                 "config_version": CONFIG_SCHEMA_VERSION},
         "provision": {"state_file": f".state/{site}.json", "refuse_existing": True},
         "ssh": {"user": user, "become": user != "root", "auth": auth,
                 **({"key_file": key_file} if key_file else {}), "port": 22},
@@ -216,6 +217,15 @@ def run_wizard(output: str | None = None) -> Path:
             raise SystemExit("aborted — nothing written")
     with open(out, "w") as f:
         yaml.safe_dump(cfg, f, sort_keys=False, default_flow_style=False)
+        f.write(
+            "\n"
+            "# site.config_version pins this file to the config-file shape a "
+            f"given akropolis release expects ({CONFIG_SCHEMA_VERSION} as of this\n"
+            "# akropolis). `provision`/`shutdown`/`start`/`clean` refuse to run "
+            "against a mismatched version instead of guessing -- see\n"
+            "# CHANGELOG.md and CONFIG_SCHEMA_VERSION in akropolis/config.py "
+            "before bumping it by hand.\n"
+        )
         # Signpost, not a question: the dump rarely exists at init time, and
         # restore is a cutover-time move — but a section that isn't visible in
         # the generated file may as well not exist. yaml.safe_dump can't emit
