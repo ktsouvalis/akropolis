@@ -11,6 +11,24 @@ dead ends.
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-09-10
+
+### Added
+
+- `akropolis monitor` now runs the real-time cluster health dashboard
+  (previously a stub telling you to install `akropolis-monitor` separately),
+  and a new `akropolis logs` command runs the cluster-wide log viewer over
+  SSH, including `--save FILE` to write a plain-text report instead of the
+  TUI. Both are folded in from [akropolis-monitor](https://github.com/ktsouvalis/akropolis-monitor)
+  and take the `config.<site>.monitor.yml` the `handoff` phase already
+  emitted, not `config.<site>.yml`. `ha` topology only for now — the ported
+  code has no concept of `single` yet, even though `handoff` has emitted a
+  single-node-shaped monitor config since the single-node topology landed.
+- New dependencies (`textual`, `requests`, `urllib3`, and optionally
+  `psycopg2`/`python3-psycopg2` for the PostgreSQL replication-slot panel)
+  are bundled the same way paramiko's are: pure-Python ones ship inside the
+  zipapp, `psycopg2`'s compiled parts come from the system.
+
 ## [1.3.0] - 2026-09-10
 
 ### Added

@@ -5,20 +5,36 @@
 #   ./tools/build_pyz.sh          -> dist/akropolis
 #
 # The result is one executable file carrying akropolis plus its pure-Python
-# dependencies (paramiko, Jinja2, PyYAML, rich and their transitive pure-Python
-# deps). Copy it anywhere and run it; there is no install step.
+# dependencies (paramiko, Jinja2, PyYAML, rich, textual, requests, urllib3
+# and their transitive pure-Python deps). Copy it anywhere and run it; there
+# is no install step.
 #
 # WHAT IS DELIBERATELY *NOT* BUNDLED
 # ----------------------------------
 # zipimport cannot load compiled extension modules (.so) out of a zip, so
-# paramiko's compiled dependencies must come from the system:
+# paramiko's compiled dependencies -- and psycopg2's -- must come from the
+# system:
 #
-#     sudo apt install python3-cryptography python3-bcrypt python3-nacl
+#     sudo apt install python3-cryptography python3-bcrypt python3-nacl \
+#                      python3-psycopg2
 #
 # This is a feature, not a workaround. cryptography stays on the distribution's
 # security-update track instead of being frozen inside a release artifact that
 # nobody re-cuts for six months. Bundling it would also make this file
 # architecture-specific; as built, it runs on any CPython >= 3.10.
+#
+# psycopg2 is the one genuinely optional package in that apt line: the
+# `monitor` dashboard guards its import and simply omits the PostgreSQL
+# replication-slot panel detail without it. The other three are required
+# because paramiko will not import without them.
+#
+# psycopg2-binary needs more care than the rest to strip. It ships its
+# compiled module *inside* the package directory (psycopg2/_psycopg.cpython-
+# *.so) AND a sibling psycopg2_binary.libs/ holding vendored shared objects
+# (libpq, libssl, libkrb5, ...) named like `libpq-f521cc7d.so.5.17` -- they do
+# NOT end in ".so", so a `-name '*.so'` sweep alone walks straight past every
+# one of them. Hence the explicit directory removal below AND the `*.so*`
+# glob, not just one or the other.
 #
 # PyYAML's _yaml and MarkupSafe's _speedups are stripped for the same reason.
 # Both fall back to their pure-Python implementations automatically -- slower,
@@ -65,17 +81,29 @@ echo "==> vendoring akropolis + dependencies"
 "$PY" -m pip install --quiet --no-compile --target "$BUILD" "$ROOT"
 
 echo "==> stripping compiled artifacts (see header)"
-# Whole packages that exist only to back cryptography/paramiko's C layer.
+# Whole packages that exist only to back cryptography/paramiko/psycopg2's C layer.
 rm -rf "$BUILD"/cryptography "$BUILD"/cryptography-*.dist-info \
        "$BUILD"/bcrypt "$BUILD"/bcrypt-*.dist-info \
        "$BUILD"/nacl "$BUILD"/PyNaCl-*.dist-info "$BUILD"/pynacl-*.dist-info \
        "$BUILD"/cffi "$BUILD"/cffi-*.dist-info \
        "$BUILD"/pycparser "$BUILD"/pycparser-*.dist-info \
        "$BUILD"/_yaml \
+       "$BUILD"/psycopg2 "$BUILD"/psycopg2_binary-*.dist-info \
+       "$BUILD"/psycopg2_binary.libs \
        "$BUILD"/bin
-# Anything else compiled, plus bytecode caches.
-find "$BUILD" -name '*.so' -delete
+# Anything else compiled, plus bytecode caches. Note '*.so*', not '*.so':
+# psycopg2-binary's vendored libs carry their soname version after the
+# extension (see header) and a bare '*.so' pattern misses them silently.
+find "$BUILD" -name '*.so*' -delete
 find "$BUILD" -name '__pycache__' -type d -prune -exec rm -rf {} +
+
+echo "==> asserting nothing compiled survived"
+leftover="$(find "$BUILD" -name '*.so*' -o -name '*.pyd')"
+if [ -n "$leftover" ]; then
+    echo "error: compiled artifacts survived the strip:" >&2
+    echo "$leftover" >&2
+    exit 1
+fi
 
 # The .dist-info directories stay, but pruned to what is actually read at
 # runtime or owed to the licenses of what we're bundling. METADATA is not
@@ -186,8 +214,11 @@ for name, version in rows:
 print()
 print("Supplied by the system, NOT bundled (apt install python3-<name>):")
 print()
-for name in ("cryptography", "bcrypt", "nacl"):
+for name in ("cryptography", "bcrypt", "nacl", "psycopg2"):
     print(f"  {name}")
+print()
+print("psycopg2 is optional: the `monitor` dashboard degrades gracefully")
+print("(no PostgreSQL replication-slot detail) without it.")
 print()
 print("Licenses for the bundled packages above: see THIRD_PARTY_LICENSES.md")
 print("(shipped next to this binary) or <package>.dist-info/licenses/ inside")

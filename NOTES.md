@@ -10,6 +10,53 @@ when it was fixed.
 
 ---
 
+## akropolis-monitor folded in as `monitor`/`logs` (Sep 2026)
+
+`akropolis monitor` was a stub since the phase pipeline first worked end to
+end; the real dashboard and log viewer lived in a separate repository,
+`akropolis-monitor`, that every operator had to install and keep in sync by
+hand. Ported `dashboard.py` and `logs.py` into `akropolis/monitor/` near
+verbatim — both were already self-contained (no imports of their own
+package, just stdlib + third-party) and both already took a config path as
+a plain function argument (`dashboard.run(path)`, `logs.run(config, last,
+save, level)`), so this was assembly, not a rewrite.
+
+Three decisions worth recording:
+
+- **`config` is positional on `akropolis logs`, not `--config`.**
+  akropolis-monitor kept `--config` there specifically because `logs_viewer.py`
+  always took it that way and operators had it in their shell history — a
+  real constraint, for a standalone binary. That constraint doesn't carry
+  over: `logs` is a brand-new command on a different binary, and every other
+  akropolis subcommand (`provision`, `shutdown`, `start`, `clean`, `monitor`)
+  takes `config` positionally. Matching the new host's own convention wins
+  once the old one's reason for existing (shell history for the *old*
+  binary) doesn't apply.
+- **`ha` topology only.** The ported code has zero awareness of
+  `site.topology: single` — it's built entirely around etcd/Patroni/HAProxy/
+  keepalived panels that don't exist on a single node. `handoff` has been
+  emitting a single-node-shaped monitor config
+  (`monitor-config-single.yml.j2`) since that topology landed, and nothing
+  has ever read it. Scoped out deliberately rather than half-built: teaching
+  `dashboard.py` a second, much smaller panel set is real work, not a quick
+  branch, and doing it without a single-node cluster to verify against would
+  be exactly the kind of "looks right, never run" change this codebase tries
+  to avoid.
+- **The standalone `akropolis-monitor` repository is untouched.** No
+  archiving, no deprecation notice, no README pointer. That's a separate,
+  later decision — this change only adds a third way to run the same code,
+  it doesn't retire the other two (the standalone binary, or importing
+  `akropolis_monitor` directly).
+
+The `psycopg2-binary` handling (strip pattern `*.so*` not `*.so`, explicit
+`psycopg2_binary.libs/` removal, apt-supplied `python3-psycopg2` at runtime)
+was copied from akropolis-monitor's own `build_pyz.sh` verbatim — that
+script already carried the exact fix for a bug (vendored libs silently
+surviving a `*.so`-only strip) that would otherwise have had to be
+rediscovered here.
+
+---
+
 ## "Reproducible" was a claim, not a fact (Sep 2026)
 
 The 1.0.0 README said the build was reproducible. Checked it properly after

@@ -6,7 +6,8 @@
     akropolis shutdown  config.yml      # gracefully stop the authentik backend(s)
     akropolis start      config.yml     # bring them back — requires a prior shutdown
     akropolis clean     config.yml      # tear the site down to bare VMs
-    akropolis monitor   config.yml      # (stub — folds in ak-monitor later)
+    akropolis monitor   config.yml      # real-time cluster health dashboard
+    akropolis logs      config.yml      # cluster-wide log viewer (SSH), --save to download
     akropolis update                    # install the latest release (zipapp binary only)
 """
 
@@ -302,8 +303,19 @@ def cmd_clean(args: argparse.Namespace) -> int:
 
 
 def cmd_monitor(args: argparse.Namespace) -> int:
-    console.print("[yellow]monitor: not folded in yet.[/yellow] For now run ak-monitor "
-                  "with the emitted config from the handoff phase.")
+    # Imported here, not at module level: textual/requests/urllib3/psycopg2
+    # are only needed by this subcommand, and `--help`/every other command
+    # should not pay for importing them.
+    from .monitor import dashboard
+
+    dashboard.run(args.config)
+    return 0
+
+
+def cmd_logs(args: argparse.Namespace) -> int:
+    from .monitor import logs
+
+    logs.run(args.config, args.last, args.save, args.level)
     return 0
 
 
@@ -347,9 +359,24 @@ def main(argv: list[str] | None = None) -> int:
                          help="required additionally when site.environment is production")
     p_clean.set_defaults(func=cmd_clean)
 
-    p_mon = sub.add_parser("monitor", help="run the monitor (stub)")
-    p_mon.add_argument("config", help="path to config.<site>.yml")
+    p_mon = sub.add_parser("monitor", help="real-time TUI dashboard for the full "
+                           "Authentik HA stack (ha topology only)")
+    p_mon.add_argument("config", help="path to config.<site>.monitor.yml (the "
+                       "handoff phase emits this, not config.<site>.yml)")
     p_mon.set_defaults(func=cmd_monitor)
+
+    p_logs = sub.add_parser("logs", help="cluster-wide log viewer over SSH "
+                            "(ha topology only)")
+    p_logs.add_argument("config", help="path to config.<site>.monitor.yml (the "
+                        "handoff phase emits this, not config.<site>.yml)")
+    p_logs.add_argument("--last", type=int, default=24, metavar="HOURS",
+                        help="hours of logs to fetch (default: 24)")
+    p_logs.add_argument("--save", metavar="FILE",
+                        help="write a plain-text report to FILE instead of showing the TUI")
+    p_logs.add_argument("--level", default="warning",
+                        choices=["debug", "info", "warning", "error"],
+                        help="minimum severity to include (default: warning)")
+    p_logs.set_defaults(func=cmd_logs)
 
     p_update = sub.add_parser("update", help="download and install the latest akropolis "
                               "release (zipapp binary only)")

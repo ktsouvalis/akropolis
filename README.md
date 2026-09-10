@@ -28,12 +28,15 @@ Akropolis orchestrates a robust, highly-available identity infrastructure powere
 *Note: All trademarks are the property of their respective owners.*
 
 The `akropolis` release binary also bundles the pure-Python libraries it
-depends on (paramiko, Jinja2, PyYAML, rich and their own dependencies) —
-their source ships inside that single file, not just akropolis's own. Each
-release publishes a `THIRD_PARTY_LICENSES.md` alongside the binary indexing
-every bundled package's license, and the full license text for each ships
-in the archive next to it. paramiko is LGPL-2.1; everything else bundled is
-MIT/BSD.
+depends on (paramiko, Jinja2, PyYAML, rich, textual, requests, urllib3 and
+their own dependencies) — their source ships inside that single file, not
+just akropolis's own. Each release publishes a `THIRD_PARTY_LICENSES.md`
+alongside the binary indexing every bundled package's license, and the full
+license text for each ships in the archive next to it. paramiko is
+LGPL-2.1; requests is Apache-2.0; everything else bundled is MIT/BSD.
+`psycopg2`, used only by `akropolis monitor`'s PostgreSQL panel, is supplied
+by the system (`python3-psycopg2`) rather than bundled — see
+[Install](#install).
 
 ## Status
 
@@ -73,6 +76,11 @@ zip, and freezing a crypto library inside a release artifact is the wrong
 posture for a tool that provisions identity infrastructure. This way
 `cryptography` stays on the distribution's security-update track.
 `python3-cryptography` is usually present already on a server install.
+
+Only needed on the **workstation you run `akropolis monitor` from**, and only
+for one panel: `sudo apt install python3-psycopg2`. Its dashboard degrades
+gracefully without it, simply omitting the PostgreSQL replication-slot detail;
+nothing else is affected. Not required on the provisioned nodes.
 
 To audit what a given binary is carrying:
 
@@ -141,13 +149,47 @@ Every long-running operation announces itself *before* it runs: an animated stat
 ## Commands
 
 ```
+akropolis --version                 print the installed version and exit
+akropolis -h | --help                top-level help; akropolis <command> -h for a command's own
+
 akropolis init [-o FILE]            interactive wizard → writes config.<site>.yml
-akropolis provision CONFIG          run the phase pipeline (resumable)
-akropolis provision CONFIG --only PHASE [PHASE...]     run only named phases
-akropolis provision CONFIG --replay PHASE [PHASE...]   re-run completed phases
-akropolis monitor CONFIG            (stub) will run the monitoring TUI
-akropolis update                    install the latest release (zipapp binary only)
+  -o, --output FILE                    output path (default: config.<site>.yml)
+
+akropolis provision CONFIG          run the phase pipeline against a site (resumable)
+  --only PHASE [PHASE...]              run only the named phase(s), e.g. --only preflight
+  --replay PHASE [PHASE...]            re-run specific completed phase(s)
+
+akropolis shutdown CONFIG           gracefully stop the authentik server+worker
+                                       (ha: on all 3 nodes, other services left running;
+                                        single: postgresql left running)
+
+akropolis start CONFIG              start the authentik backend(s) again — refuses
+                                       unless `shutdown` last completed gracefully
+
+akropolis clean CONFIG              tear the site down to bare VMs (reverse build
+                                       order; typed site-name confirmation)
+  --i-know-this-is-production          required additionally when site.environment
+                                        is production
+
+akropolis monitor CONFIG            real-time cluster health dashboard (ha topology only)
+
+akropolis logs CONFIG               cluster-wide log viewer over SSH (ha topology only)
+  --last HOURS                         hours of logs to fetch (default: 24)
+  --level {debug,info,warning,error}   minimum severity to include (default: warning)
+  --save FILE                          write a plain-text report to FILE instead of
+                                        showing the TUI (.log appended if omitted)
+
+akropolis update                    download and install the latest release
+                                       (zipapp binary only)
 ```
+
+`CONFIG` means `config.<site>.yml` (the file `init` writes and `provision`
+reads) for every command **except** `monitor` and `logs`, which instead take
+`config.<site>.monitor.yml` — the separate file `handoff` emits at the end of
+a successful `provision` run. Passing the wrong one to either fails fast: the
+schemas don't overlap. See [Monitoring](#monitoring) for the `monitor`/`logs`
+file and [The phase model](#the-phase-model) / [Cleaning a
+site](#cleaning-a-site) for `--only`/`--replay`/`--i-know-this-is-production`.
 
 Every command checks GitHub for a newer release (cached for 24h) and prints a
 one-line notice if one is available; it never blocks or fails a command if
@@ -496,6 +538,82 @@ The plan printed before the confirmation prompt calls out the version change (`a
 - **No backup.** Authentik runs its DB migrations on container start with no rollback. Take one first — `restore.sql_file` on a fresh site restores a dump, but there's no equivalent "dump this cluster before upgrading" step; use `pg_dump` (`ha`: against the Patroni leader; `single`: against the `postgresql` container) by hand.
 - **No version-skip check.** Authentik's own release notes sometimes require going through an intermediate version rather than jumping straight to the target. akropolis renders whatever tag you give it — check upstream's upgrade path yourself.
 
+## Monitoring
+
+`ha` topology only for now — see [Roadmap](#roadmap). The `handoff` phase
+already emitted `config.<site>.monitor.yml` on your workstation; point both
+commands at that file, not at `config.<site>.yml`.
+
+### `akropolis monitor`
+
+```bash
+akropolis monitor config.<site>.monitor.yml
+```
+
+Real-time TUI, one panel per service, refreshed every `refresh_interval`
+seconds (set in the monitor config).
+
+| Panel | How |
+|---|---|
+| **VIP / keepalived / nginx** | `/monitor` on each node and on the VIP; infers the track script's state and effective priorities |
+| **nginx connections** | `/nginx_status` per node: active, reading, writing, waiting |
+| **Authentik backends** | `/-/health/live/` per node |
+| **Authentik workers** | `GET /api/v3/tasks/workers/`, mapped back to nodes |
+| **Authentik worker queue** | `GET /api/v3/tasks/tasks/status/`: queued, running, rejected, errored |
+| **HAProxy backends** | parses `/stats;csv`: per-backend UP/DOWN, request rate, 5xx |
+| **PostgreSQL / Patroni** | `GET :8008/`: role, state, timeline, replication lag, replication slots, last failover |
+| **etcd** | `/health` plus `POST /v3/maintenance/status`: leader, raft term, db size |
+
+Worker health is read from the task API, not from `/-/health/live/` on
+`:9080`: that endpoint is the Rust/axum liveness server and stays 200 even
+when the dramatiq consumer is dead.
+
+| Indicator | Meaning |
+|---|---|
+| Green | Up, and in the primary/active/leader role |
+| Grey | Up, in a backup/replica/follower role (healthy, non-primary) |
+| Yellow | Degraded: partial backends up, replica not streaming, slots lagging |
+| Red | Down or unreachable |
+
+`R` forces an immediate refresh, `Q` quits, `Ctrl+P` opens the command
+palette. Set `unicode_bullets: false` in the monitor config if your terminal
+renders `●` as an underscore (common in Proxmox containers without a UTF-8
+locale).
+
+### `akropolis logs`
+
+```bash
+akropolis logs config.<site>.monitor.yml                       # TUI, last 24h, warning+
+akropolis logs config.<site>.monitor.yml --last 6 --level error
+akropolis logs config.<site>.monitor.yml --save cluster_logs   # writes cluster_logs.log, no TUI
+```
+
+Collects warnings and errors from every service on every node over SSH.
+Containerised services are read with `docker logs`, bare-metal ones from
+`journalctl`. `--level` takes `debug`, `info`, `warning` (default) or `error`,
+each including everything at or above it in severity, matching
+`journalctl -p` semantics; `debug` disables filtering entirely.
+
+In TUI mode there is a tab per node, with a sub-tab per service; results
+stream in as each SSH call returns. `--save` writes a structured plain-text
+report to disk instead — the download path — and prints progress to stdout;
+the `.log` extension is appended if omitted.
+
+Needs SSH access to every node (`ssh.username` and `ssh.key_file` in the
+monitor config), plus the Docker CLI and `journalctl` on the nodes that run
+them. Which services get polled is config, not code — see the `services:`
+block the `handoff` phase renders into the monitor config.
+
+### Adjusting scheme / TLS
+
+The per-node and VIP `/monitor` probes read `scheme:` from the monitor
+config, already filled in correctly by `handoff` for whatever `tls.provider`
+the site uses. A `tls.provider: none` site serves plain HTTP on `:80`;
+probing it as HTTPS marks every node UNREACHABLE and, because nginx
+reachability is how keepalived state is inferred, shows every node as FAULT
+with a phantom priority drop. If you hand-edit the monitor config, keep
+`scheme.nginx`/`scheme.nginx_port` matched to the site's actual `tls.provider`.
+
 ## Configuration reference
 
 `config.example.yml` is the reference: every key akropolis reads appears there, commented out when optional. That is enforced rather than promised: `python3 tools/audit_config_keys.py` fails if the code reads a key the example never mentions. It exists because `base.apt_upgrade` and `network.trusted_proxies` were documented in this README and implemented in code but missing from the example, which meant that in practice nobody could find them.
@@ -527,7 +645,7 @@ Security posture, stated plainly:
 
 ## Roadmap
 
-fold in the monitoring TUI as `akropolis monitor` (including teaching it single-node's smaller schema) → encrypted state secrets → wider coverage of restore and clean against real dumps and half-built nodes.
+teach `akropolis monitor`/`akropolis logs` single-node's smaller schema (they only understand `ha` today — see [Monitoring](#monitoring)) → encrypted state secrets → wider coverage of restore and clean against real dumps and half-built nodes.
 
 A `.deb` was evaluated for 1.0.0 and deferred: the single-file build covers the same ground with one artifact instead of two. It becomes worth doing if akropolis ends up installed on enough machines that `apt remove` and a dpkg-visible version start to matter; see NOTES.md for what it would take.
 
