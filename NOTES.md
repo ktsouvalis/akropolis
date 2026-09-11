@@ -10,6 +10,63 @@ when it was fixed.
 
 ---
 
+## single-topology gets its own nginx — bare-metal, not containerized (Sep 2026)
+
+Supersedes "Single-node topology: no nginx after all: authentik serves TLS
+directly" further down — that decision was reasonable at the time (NAT with
+no port translation, keep it simple), but it's what left the two gaps below
+unaddressed.
+
+Two related gaps in single-node topology, found by comparing it against how
+an operator's own hand-run single-node deployment was actually built (a
+reverse proxy in front, authentik behind it — nothing new, just not
+something akropolis did yet):
+
+1. **No maintenance page on `akropolis shutdown`.** authentik terminated its
+   own TLS and Docker published `443 -> container 9443` directly — nothing
+   else listened on 443. Stopping `server`/`worker` for maintenance left
+   clients with connection-refused, unlike `ha`, where nginx stays up and
+   serves `maintenance.html` for the duration.
+2. **TLS lived in the database.** Managing a real certificate for
+   single-node authentik meant PATCHing a brand's `web_certificate` API
+   field (the old `authentik_certs_phase.py`). Since that field is a column
+   on a database row, `restore` (`DROP DATABASE` + load a dump) had to
+   re-apply it every time or the node silently fell back to its own
+   self-signed cert — a fragility class that only existed because TLS state
+   lived somewhere a destructive restore could reach it.
+
+Fix: `nginx_single_phase.py`, a new phase between `authentik` and `restore`
+that replaces the old `certs` phase entirely. Deliberately **bare-metal**
+(systemd), not a container — mirroring why `keepalived` is bare-metal on
+`ha`: the thing that has to keep answering when Docker (or authentik) is
+down or being maintained must not share Docker's own failure modes. A
+containerized nginx managed by `docker compose` would go down in exactly
+the scenarios (Docker daemon trouble, a host reboot before `docker.service`
+is up) where the maintenance page matters most.
+
+authentik's own container is untouched — still listening on its image
+defaults (9443 https self-signed, 9000 http) — just published to **loopback
+only** now instead of host 443. nginx proxies to 9443 (https,
+`proxy_ssl_verify off`) when it's terminating real TLS, or to 9000 (http)
+for `tls.provider: none`, exactly mirroring how `ha`'s own `nginx.conf.j2`
+already switches between its 9443/9080 backends depending on `tls_enabled`.
+This closes a related inconsistency for free: `tls.provider: none` on
+single used to still get HTTPS (authentik's own auto-generated cert) —
+different from `ha`'s `none`, which is genuinely plain HTTP. They now match.
+
+Certificate material lives as plain files on the host
+(`/etc/nginx/akropolis-certs`) — no volume/bind-mount semantics to manage,
+because there's no container to mount them into. This was a deliberate
+choice made while designing the phase: prefer directory paths over Docker
+volumes for anything a reverse proxy needs to read, once that proxy isn't
+itself containerized.
+
+`restore_single_phase.py` got simpler, not more careful, as a result: the
+whole "put the web_certificate back after DROP DATABASE" step is gone,
+because TLS is no longer database state at all.
+
+---
+
 ## akropolis-monitor folded in as `monitor`/`logs` (Sep 2026)
 
 `akropolis monitor` was a stub since the phase pipeline first worked end to

@@ -20,16 +20,17 @@ cluster being dismantled, and the database goes down before its DCS.
 
 single-node has far less to remove: authentik + its containerized postgres
 share one compose project (`docker compose down -v` also drops the named
-postgres volume), there's no keepalived/haproxy/patroni/etcd to have ever
-existed, and `/etc/letsencrypt` covers both the HA cluster's certbot
-distribution key AND single-node's own renewal deploy hook, so it needed no
-new step — just a shorter STEPS list so an operator doesn't see a confusing
-"keepalived down" checkmark on a host that never had it.
+postgres volume), and there's no haproxy/patroni/etcd to have ever existed.
+It does have its own bare-metal nginx now (nginx_single_phase.py, disabled
++ its config/certs/webroot removed — same "leave the package, remove our
+config" treatment keepalived gets on ha), and `/etc/letsencrypt` covers both
+the HA cluster's certbot distribution key AND single-node's own renewal
+deploy hook, so that step needed no changes for it.
 
 What it deliberately does NOT touch, either topology:
-  - packages (docker, postgresql-16, keepalived, certbot, chrony...) — apt
-    state belongs to the operator's patching policy; removing data and config
-    is what makes the next provision run honest
+  - packages (docker, postgresql-16, keepalived, nginx, certbot, chrony...) —
+    apt state belongs to the operator's patching policy; removing data and
+    config is what makes the next provision run honest
   - the hostname — the previous one is unknowable
   - anything outside the paths akropolis itself created
 
@@ -87,11 +88,18 @@ STEPS: list[tuple[str, str]] = [
 ]
 
 # single-node: one compose project (authentik + its containerized postgres,
-# `down -v` drops the named postgres volume too), no keepalived/haproxy/
-# patroni/etcd ever existed, /etc/letsencrypt covers the renewal deploy hook
-# (see authentik_certs_phase.py) the same way it covers the HA cluster's
-# certbot key — no extra step needed for it.
+# `down -v` drops the named postgres volume too), no haproxy/patroni/etcd
+# ever existed. nginx is bare-metal here (nginx_single_phase.py) — disabled
+# and its own config/certs/webroots removed, package left installed, same
+# policy already applied to keepalived on ha. /etc/letsencrypt covers the
+# renewal deploy hook the same way it covers the HA cluster's certbot key —
+# no extra step needed for it.
 STEPS_SINGLE: list[tuple[str, str]] = [
+    ("nginx down + removed",
+     "systemctl disable --now nginx 2>/dev/null; "
+     "rm -f /etc/nginx/sites-available/akropolis.conf /etc/nginx/sites-enabled/akropolis.conf; "
+     "rm -rf /etc/nginx/akropolis-certs /var/www/akropolis-certbot /var/www/akropolis-maintenance; "
+     "true"),
     ("authentik + postgres down + removed (incl. named volume)",
      "cd /opt/authentik 2>/dev/null && docker compose down -v 2>/dev/null; "
      "rm -rf /opt/authentik; true"),
@@ -126,6 +134,8 @@ GONE_SINGLE = [
     ("/opt/authentik", "test ! -e /opt/authentik"),
     ("no ak containers",
      "test -z \"$(docker ps -aq 2>/dev/null --filter name='authentik')\""),
+    ("nginx config removed", "test ! -e /etc/nginx/sites-enabled/akropolis.conf"),
+    ("nginx inactive", "! systemctl is-active --quiet nginx"),
 ]
 
 
@@ -145,13 +155,14 @@ class CleanPhase(Phase):
                 "(ssh kept) → /etc/hosts block → /tmp dump leftovers")
         else:
             lines.append(
+                "bare-metal nginx (disabled, config/certs/webroots removed) → "
                 "authentik + its containerized postgres (one compose project, "
                 "docker compose down -v drops the named volume too) → TLS material "
                 "→ UFW reset (ssh kept) → /etc/hosts block → /tmp dump leftovers")
         lines.append(
             "packages (docker, postgresql-16" + (", keepalived, certbot" if cfg.topology == "ha"
-            else ", certbot") + ") and the hostname are left alone — data and config "
-            "removal is what makes the next provision honest")
+            else ", nginx, certbot") + ") and the hostname are left alone — data and "
+            "config removal is what makes the next provision honest")
         if cfg.topology == "ha":
             lines.append("the VIP is released with the first step — anything still "
                          f"pointing at {cfg.network.vip} goes dark immediately")

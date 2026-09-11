@@ -430,36 +430,38 @@ it to `single` changes the shape of the pipeline, not just its size:
   `postgres:16-alpine` container (loopback-only `127.0.0.1:5432`, same
   "always local, never a remote IP" reasoning as an HA node's `127.0.0.1:5000`
   HAProxy connection) instead of a bare-metal Patroni-managed instance.
-- **No nginx either.** A single node is meant to stand on its own behind a
-  NAT with no port translation (public 443 → this node's 443, unchanged),
-  so unlike `ha`, akropolis doesn't put its own reverse proxy in front.
-  authentik's **own core webserver** serves HTTPS directly on 443 instead of
-  the usual 9080/9443 offset. It gets there through mechanisms authentik
-  already ships: a `certs` directory mounted at `/certs` on the worker
-  container (certificate *discovery*, see [authentik's certificate
-  docs](https://docs.goauthentik.io/sys-mgmt/certificates/)) and each
-  brand's **Web Certificate** field, which akropolis PATCHes via the API,
-  the same mechanism already used for the branding logo/favicon.
+- **nginx, but bare-metal, not containerized.** A single node still gets its
+  own reverse proxy in front — terminating public TLS and serving the same
+  bilingual maintenance page HA uses whenever authentik is unreachable — but
+  it runs as an ordinary systemd service (`nginx_single_phase.py`), not a
+  container. That's deliberate, for the same reason `keepalived` is
+  bare-metal on `ha`: the thing that has to keep answering when Docker (or
+  authentik) is down or being maintained must not share Docker's own
+  failure modes. Authentik's own container is untouched — still listening
+  on its image defaults (9443 https self-signed, 9000 http) — just published
+  to **loopback only** now instead of host 443, so nginx (proxying to 9443
+  with `proxy_ssl_verify off`, or to 9000 for `tls.provider: none`) is the
+  only thing the public reaches. Certificates live as plain files on the
+  host (`/etc/nginx/akropolis-certs`) — no volume/bind-mount to manage,
+  there's no container.
 - **Ordinary bridge networking, not `network_mode: host`.** Unlike every HA
   service, single-node's `server`/`worker` containers are isolated from each
   other and from the host, matching the [reference compose at
   docs.goauthentik.io](https://docs.goauthentik.io/compose.yml). Docker's own
-  port publish (`ports: ["443:9443"]` on `server`) maps the host's 443 to the
-  container's own default 9443, never a privileged port from the container's
-  point of view, so no `cap_add` or root is needed. PostgreSQL isn't even
-  loopback-published; `server`/`worker` reach it by Docker's own DNS
-  (`AUTHENTIK_POSTGRESQL__HOST: postgresql`). An earlier version of this used
-  `network_mode: host` (copied from the HA cluster without the reason,
+  port publish (`ports:` on `server`) maps `127.0.0.1:9443`/`127.0.0.1:9000`
+  to the container's own default ports, never privileged from the
+  container's point of view, so no `cap_add` or root is needed. PostgreSQL
+  isn't even loopback-published; `server`/`worker` reach it by Docker's own
+  DNS (`AUTHENTIK_POSTGRESQL__HOST: postgresql`). An earlier version of this
+  used `network_mode: host` (copied from the HA cluster without the reason,
   HAProxy routing, that exists for it there) and hit two real bugs before a
   live run surfaced them: the worker inheriting and squatting the server's
   HTTPS port, then the server needing a capability to bind 443 at all. Neither
   is possible once each container has its own network namespace; see
   NOTES.md for the full story.
-- **Required free ports on the host** are just `80, 443`: everything else
-  (server/worker's own 9000/9443/9300) stays inside their isolated network
-  namespaces and never touches the host at all. Port 80 stays free by
-  construction (nothing akropolis renders binds it), so certbot can use it
-  in standalone mode for ACME issuance and renewal.
+- **Required free ports on the host** are `80, 443, 9000, 9443`: the first
+  two are nginx's; the latter two are authentik's server, loopback-only but
+  still worth a preflight check.
 - **A different default `authentik.tag`**: written into the generated config by `init` (quoted; unquoted, `2026.10` is YAML for the float 2026.1, and `load()` now refuses a non-string tag), so the version is visible in the file you review rather than implied by the code. `ha` stays pinned to `2026.5.6`
   (2026.8.0 hit a multi-node embedded-outpost restart loop; see
   NOTES.md); `single` defaults to `2026.8.1`, since a single node has no
@@ -467,7 +469,7 @@ it to `single` changes the shape of the pipeline, not just its size:
   explicitly to override either default.
 
 Intended use: a fallback instance to bring up quickly if the HA cluster is
-down, not a smaller HA cluster. `preflight`, `base`, `authentik`, and `certs`
+down, not a smaller HA cluster. `preflight`, `base`, `authentik`, and `nginx`
 are implemented and adapt to `single` today.
 
 `authentik` here has no bootstrap-vs-rolling split the way the HA phase
@@ -481,22 +483,34 @@ config, or asked once and pinned in state, same pattern as `monitor.ip`,
 instead of a silent default; this is single-node-only for now, the HA phase
 still hardcodes `false`.
 
-`certs` runs *after* `authentik` (it needs a live API to PATCH the brand) and
-depends on `tls.provider`: `none`/`self_signed` are a no-op: authentik
-already generates and serves its own self-signed certificate on first boot,
-so there's nothing to add; `acme` runs certbot in `--standalone` mode (port
-80 is free by construction) with a renewal deploy hook that re-copies the
-cert and restarts the worker on every future renewal, and, before issuing,
+`nginx` runs *after* `authentik` (something has to already be listening on
+loopback for it to proxy to) and condenses the HA topology's `tls` +
+`nginx-keepalived` phases for one node — no VRRP, no distribution keypair,
+no per-node `/monitor` identity, and no `down && up -d` inode-trap dance
+(bare metal has no bind-mount, so `nginx -t && systemctl reload nginx` is
+always safe). It depends on `tls.provider`: `none` renders a plain HTTP-only
+config, proxying straight to authentik's own HTTP listener (`9000`) —
+testing only; `self_signed` generates a 10-year cert locally (CN/SAN =
+`tls.hostname` or, if blank, the node's own IP); `acme` generates that same
+self-signed cert first as a placeholder so nginx's `:443` block has files to
+start with, then — once nginx is serving the ACME challenge path on `:80` —
+runs certbot in `--webroot` mode, with a deploy hook that re-copies the
+issued cert and reloads nginx on every future renewal; before issuing, it
 reads the issuer of whatever certificate is already on the node, forcing the
 reissue when it disagrees with what this run asks for (rehearse against
 Let's Encrypt staging, set `acme.staging: false`, re-run, and certbot on its
 own would decline as *not due for renewal* and leave the untrusted
-certificate in place); `import` validates the
-provided cert on the workstation first (key↔cert match, SAN coverage,
-expiry, the same checks the HA `tls` phase runs) and pushes it to the node.
-Either way the cert lands in authentik's discovery folder, the worker is
-restarted so discovery runs immediately, and the default brand's Web
-Certificate is set to the result.
+certificate in place); `import` validates the provided cert on the
+workstation first (key↔cert match, SAN coverage, expiry, the same checks the
+HA `tls` phase runs) and places it directly, no placeholder needed. Either
+way nginx proxies to authentik's own HTTPS listener (`9443`, loopback-only,
+self-signed, `proxy_ssl_verify off`) — the same trust split the HA
+topology's nginx already uses against its 3 backends — and serves the same
+bilingual maintenance page whenever authentik is unreachable, `502`/`503`/
+`504` status preserved so monitoring still sees the outage. This also means
+`akropolis shutdown` now gets its maintenance page on `single` too: nginx is
+untouched by that command and keeps answering while authentik's containers
+are stopped, exactly like HA's nginx does.
 
 `handoff` is the same job as the HA version (emit the monitor config, print
 the landing card), much smaller by construction: no VIP, no keepalived
@@ -504,8 +518,9 @@ priorities, no HAProxy/postgres credentials to hand out (PostgreSQL never
 leaves the loopback interface, so a remote monitor couldn't use those
 credentials anyway). The admin URL falls back to the node's own IP when
 `tls.hostname` isn't set: single-node has no VIP for `ha`'s `tls: none` to
-fall back to, and authentik always answers HTTPS here regardless of
-provider, so an empty URL was the alternative.
+fall back to; unlike `ha`, `tls: none` here is genuinely plain HTTP (nginx
+proxies straight to authentik's HTTP listener), same semantics as `ha`'s
+`none`.
 
 Still missing: nothing from the original list; `restore` and `clean` are
 both done. `restore` mirrors the HA phase's shape (dump-vs-server GUC skew
@@ -517,20 +532,23 @@ superuser IS the app role (`POSTGRES_USER=authentik`), so the HA phase's
 "restored objects owned by postgres, not the app role" trap (NOTES.md)
 cannot happen here. A restore on this
 topology also has to put back what `DROP DATABASE` takes: the bootstrap API
-token, the default brand's branding, and (the one that actually bites) the
-brand's **Web Certificate**. On single-node, authentik's own webserver
-terminates TLS, and which certificate it presents is a column on the brand
-row, so the restored dump replaces it with the old instance's brand pointing
-at a keypair that does not exist here; the node then quietly falls back to
-its self-signed certificate. The phase re-mints the token through `ak shell`
-in the worker container (the only route that doesn't already need a working
-token, since `AUTHENTIK_BOOTSTRAP_TOKEN` no longer applies once the restored
-database contains an `akadmin`) and re-applies the other two. `clean` reuses
+token and the default brand's branding — both live in the database the dump
+just replaced. TLS is no longer one of these (nginx terminates it now, from
+plain files on the host, entirely outside the database), which removes a
+fragility that used to bite here: DROP DATABASE taking the brand's Web
+Certificate setting with it and the node quietly falling back to a
+self-signed cert nobody asked for. The phase re-mints the token through
+`ak shell` in the worker container (the only route that doesn't already need
+a working token, since `AUTHENTIK_BOOTSTRAP_TOKEN` no longer applies once
+the restored database contains an `akadmin`) and re-applies branding.
+`clean` reuses
 the exact same `/opt/authentik` compose project as `authentik`, so
 `docker compose down -v` already drops the containerized postgres's named
 volume with it, a shorter step list than
-`ha`'s, since there's no keepalived/haproxy/patroni/etcd to have ever
-existed, and `/etc/letsencrypt` already covers both topologies' certbot
+`ha`'s, since there's no haproxy/patroni/etcd to have ever existed (nginx
+is still there, bare-metal — disabled and its own config/certs/webroots
+removed, package left installed, same treatment `ha`'s `clean` gives
+keepalived), and `/etc/letsencrypt` already covers both topologies' certbot
 material without a separate step.
 
 ## Cleaning a site

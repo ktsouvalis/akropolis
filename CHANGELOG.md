@@ -11,6 +11,52 @@ dead ends.
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-09-11
+
+### Added
+
+- `akropolis monitor` now understands `site.topology: single` — previously
+  the dashboard was entirely HA-shaped (ported from the standalone
+  akropolis-monitor project) and single-node sites hit hard errors
+  (`Invalid URL 'https://:443/...': No host supplied`) from worker/task-queue
+  checks that hardcoded the VIP as their probe host, plus permanently-stuck
+  "Checking..." panels for services (HAProxy, etcd, Patroni, keepalived)
+  that don't exist on that topology. Single now gets its own 4-panel layout
+  (Authentik, Workers, Worker Queue, Nginx), probing the node directly
+  instead of a nonexistent VIP. Worker-connection matching also no longer
+  falsely reports the one node as missing: it used to compare the
+  configured node name against the connected worker's Docker-assigned
+  container hostname, which can never match.
+- Single topology now provisions its own reverse proxy: a bare-metal
+  (systemd, not containerized) nginx in front of Authentik, terminating
+  public TLS and serving the same bilingual maintenance page the HA
+  topology already shows whenever Authentik is unreachable — including
+  during `akropolis shutdown`, which previously left single-node sites with
+  a bare connection-refused instead of a maintenance page. New phase
+  `nginx_single_phase.py` (pipeline name `nginx`) replaces the old `certs`
+  phase.
+
+### Changed
+
+- Single topology's Authentik container no longer publishes its HTTPS
+  listener to host port 443 directly; both of its own listeners (9443
+  https, 9000 http) are now loopback-only, with nginx as the only thing the
+  public reaches. `tls.provider: none` on single is now genuinely plain
+  HTTP end-to-end (previously it still got HTTPS via Authentik's own
+  auto-generated certificate) — matching the HA topology's `none` semantics.
+- `restore` on single topology no longer has to re-apply a certificate
+  after loading a dump: TLS moved out of the database entirely (see above),
+  removing a fragility class where a restored dump could silently revert
+  the node to a self-signed certificate.
+
+### Migration note
+
+An already-provisioned single-node site must run
+`akropolis provision <config> --replay authentik` before the new `nginx`
+phase runs for the first time, since the compose file's port mapping
+changes. The old `certs` phase's entry in the site's state file is now
+inert and can be ignored.
+
 ## [1.7.0] - 2026-09-10
 
 ### Added

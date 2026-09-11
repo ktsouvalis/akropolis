@@ -15,14 +15,14 @@ AUTHENTIK_POSTGRESQL__PASSWORD={{ pg_pass }}
 
 AUTHENTIK_SECRET_KEY={{ secret_key }}
 
-# No AUTHENTIK_LISTEN__* overrides: no nginx, no network_mode: host, no
+# No AUTHENTIK_LISTEN__* overrides: no shared docker network with nginx
+# (it's bare-metal, see nginx_single_phase.py), no network_mode: host, no
 # HAProxy — server and worker are ordinary isolated containers, each free
 # to use the image's own default ports (9000 http / 9443 https / 9300
 # metrics) with nothing to conflict with. Docker's own port publish (see
-# the server service's `ports:` in the compose file) maps host 443 -> the
-# container's 9443; :80 is deliberately left unpublished so certbot
-# standalone can use it (see authentik_certs_phase.py). This matches the
-# reference compose.yml at docs.goauthentik.io/compose.yml — the earlier
+# the server service's `ports:` in the compose file) maps both to LOOPBACK
+# ONLY; nginx is the only thing the public reaches on 80/443. This matches
+# the reference compose.yml at docs.goauthentik.io/compose.yml — the earlier
 # network_mode: host design was inherited from the HA cluster's compose
 # without the reason (HAProxy routing) that design exists for there; see
 # NOTES.md for the two real bugs it caused before this rewrite.

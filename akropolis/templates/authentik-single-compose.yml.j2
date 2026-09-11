@@ -29,13 +29,16 @@ services:
     image: ghcr.io/goauthentik/server:${AUTHENTIK_TAG}
     restart: unless-stopped
     shm_size: 512mb
-    # Container's OWN internal port stays the image default (9443) — never
-    # a privileged port, so no cap_add/root needed. Docker's own port
-    # publish (root/dockerd, not the containerized process) does the
-    # 443 -> 9443 remap; :80 is deliberately NOT published here, so
-    # certbot standalone can use it (see authentik_certs_phase.py).
+    # Container's OWN internal ports stay the image defaults (9443 https
+    # self-signed, 9000 http) — never privileged, so no cap_add/root needed.
+    # Both are published to LOOPBACK ONLY: a bare-metal nginx (see
+    # nginx_single_phase.py) is the only thing the public reaches on 80/443
+    # now, and picks which of these two to proxy to based on tls.provider —
+    # 9443 (https, proxy_ssl_verify off) when it's terminating real TLS,
+    # 9000 (http) for provider 'none' (testing only).
     ports:
-      - "443:9443"
+      - "127.0.0.1:9443:9443"
+      - "127.0.0.1:9000:9000"
     healthcheck:
       test: ["CMD", "python3", "-c", "import urllib.request,ssl,sys; ctx=ssl.create_default_context(); ctx.check_hostname=False; ctx.verify_mode=ssl.CERT_NONE; sys.exit(0) if urllib.request.urlopen('https://localhost:9443/-/health/live/', timeout=5, context=ctx).status == 200 else sys.exit(1)"]
       interval: 30s

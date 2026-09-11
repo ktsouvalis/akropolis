@@ -19,6 +19,10 @@ Deliberately narrow, and topology-aware in what "the backends" means:
            authentik-single-compose.yml.j2 — is deliberately left running.
            Stopping the database isn't "pausing the app", and single-node
            has no separate DCS to protect it the way Patroni does in ha.
+           Same story as ha for the reverse proxy: the bare-metal nginx (see
+           nginx_single_phase.py) is untouched by this phase entirely — it
+           keeps running and serves its own maintenance page for the site
+           until `start` brings authentik back, exactly like ha's nginx does.
 
 `shutdown` uses `docker compose stop`, which (Compose V2) stops services in
 REVERSE dependency order — on ha, server (which depends_on worker) stops
@@ -64,11 +68,14 @@ def _scope(ctx: PhaseContext) -> str:
 def _ready_port(ctx: PhaseContext) -> int:
     """Port the server's /-/health/ready/ answers on, from the HOST side.
 
-    ha runs network_mode: host, so the container's own 9443 is the host's
-    9443. single has ordinary bridge networking with only 443 published to
-    the host (443 -> container 9443) — 9443 itself is not reachable there.
+    Always 9443 now on both topologies: ha runs network_mode: host, so the
+    container's own 9443 is the host's 9443; single publishes the same
+    container port to loopback only (see authentik-single-compose.yml.j2) —
+    a bare-metal nginx sits in front of that on 80/443 on single, but this
+    check deliberately talks to authentik directly, bypassing nginx, same as
+    it always has on ha.
     """
-    return 9443 if ctx.cfg.topology == "ha" else 443
+    return 9443
 
 
 class AuthentikShutdownPhase(Phase):
@@ -93,6 +100,9 @@ class AuthentikShutdownPhase(Phase):
         else:
             lines.append("the postgresql container in the same compose project is "
                          "left running untouched — only server+worker stop")
+            lines.append("the bare-metal nginx in front of the node is untouched "
+                         "and keeps running — it serves its maintenance page for "
+                         "the site until `akropolis start` brings authentik back")
         lines.append("on success, unlocks `akropolis start` for this site (start "
                      "refuses unless this command last completed gracefully)")
         return lines

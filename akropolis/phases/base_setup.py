@@ -23,10 +23,12 @@ from .base import Phase, PhaseContext
 # agree.
 MONITOR_PORTS_HA = "2379,5000,5001,8008,8080,9000,9443"
 # single: no etcd/Patroni/HAProxy, PostgreSQL never leaves the internal Docker
-# network (loopback-only), and Authentik's own HTTPS listener is port 443 —
-# already public via the base allow-80/443 rule below. Nothing left that
-# needs a monitor-specific UFW punch-through, so single topology skips the
-# whole monitor.ip prompt/rule rather than opening a port nothing uses.
+# network (loopback-only), and the bare-metal nginx's public port is already
+# open via the base allow-80/443 rule below. The one thing left that needs a
+# monitor-specific UFW punch-through is nginx's stub_status (:8080,
+# nginx_single_phase.py) — same reasoning as HA's 8080 entry above: the ACL
+# is inside nginx, but UFW drops the packet first if this rule is missing.
+MONITOR_PORTS_SINGLE = "8080"
 
 PACKAGES = ("curl wget gnupg2 ca-certificates lsb-release "
             "apt-transport-https software-properties-common "
@@ -47,11 +49,9 @@ class BasePhase(Phase):
     # without this rule UFW's default-deny silently blanks every dashboard
     # column that isn't plain HTTPS.
     def _monitor_ports(self, ctx: PhaseContext) -> str:
-        return MONITOR_PORTS_HA if ctx.cfg.topology == "ha" else ""
+        return MONITOR_PORTS_HA if ctx.cfg.topology == "ha" else MONITOR_PORTS_SINGLE
 
     def _monitor_ip(self, ctx: PhaseContext) -> str:
-        if ctx.cfg.topology != "ha":
-            return ""  # nothing to gate — see MONITOR_PORTS_HA comment above
         ip = str(((ctx.cfg.raw.get("monitor") or {}).get("ip") or "")).strip()
         if ip:
             return ip
@@ -74,15 +74,14 @@ class BasePhase(Phase):
         cfg = ctx.cfg
         upgrade = bool((cfg.raw.get("base") or {}).get("apt_upgrade", False))
         # plan must not prompt: show the config value or announce the question
-        mon_ip = "" if cfg.topology != "ha" else (
-            str(((cfg.raw.get("monitor") or {}).get("ip") or "")).strip()
-            or ctx.state.data["generated"].get("monitor_ip", ""))
+        mon_ip = (str(((cfg.raw.get("monitor") or {}).get("ip") or "")).strip()
+                 or ctx.state.data["generated"].get("monitor_ip", ""))
         ports = self._monitor_ports(ctx)
         ufw_base = ("UFW: default deny incoming / allow outgoing; allow ssh, 80, 443, 9000; "
                    "allow all traffic from each node IP; --force enable" if cfg.topology == "ha"
                    else "UFW: default deny incoming / allow outgoing; allow ssh, 80, 443; "
-                   "--force enable (no inter-node rule, no monitor punch-through — single host, "
-                   "nothing beyond the public 80/443 for a monitor to reach)")
+                   "--force enable (no inter-node rule — single host, nothing to route to "
+                   "itself over the network)")
         lines = [
             f"set hostname on each node ({', '.join(n.name for n in cfg.nodes)})"
             if cfg.topology == "ha" else f"set the hostname to {cfg.nodes[0].name}",
@@ -102,10 +101,9 @@ class BasePhase(Phase):
             "install Docker CE from download.docker.com (keyring + repo + packages)",
             ufw_base,
         ]
-        if cfg.topology == "ha":
-            lines.append(f"UFW: allow monitor host {mon_ip} to ports {ports}" if mon_ip else
-                        "UFW: no monitor host in config — you will be asked interactively "
-                        "(Enter to skip; the answer is pinned in state)")
+        lines.append(f"UFW: allow monitor host {mon_ip} to ports {ports}" if mon_ip else
+                    "UFW: no monitor host in config — you will be asked interactively "
+                    "(Enter to skip; the answer is pinned in state)")
         return lines
 
     def apply(self, ctx: PhaseContext) -> None:

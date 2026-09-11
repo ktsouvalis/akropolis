@@ -117,8 +117,10 @@ def run_wizard(output: str | None = None) -> Path:
         # the flag afterwards did NOT produce a real one, because certbot sees
         # a lineage with ~89 days left and declines as not due for renewal.
         # The operator was left issuing the certificate by hand. Ask instead,
-        # default to the real thing, and let _acme() detect the staging->prod
-        # switch and force it through (see authentik_certs_phase.py).
+        # default to the real thing, and let each topology's acme handling
+        # detect the staging->prod switch and force it through (see
+        # tls_phase.py / nginx_keepalived_phase.py for ha, nginx_single_phase.py
+        # for single).
         staging = input(
             "use the Let's Encrypt STAGING environment? Staging certificates are "
             "NOT trusted by browsers — only useful for rehearsing issuance "
@@ -169,17 +171,13 @@ def run_wizard(output: str | None = None) -> Path:
     if branding:
         authentik_extra["branding"] = branding
 
-    monitor_ip = ""
-    if topology == "ha":
-        monitor_ip = _ask("monitoring host IP (allowed through UFW to Patroni/etcd/"
-                          "HAProxy/Authentik ports; Enter to skip)", default="-",
-                          validate=lambda v: None if v == "-" else _valid_ip(v))
-        monitor_ip = "" if monitor_ip == "-" else monitor_ip
-    # single-node opens no monitor-specific UFW rule at all — port 443 is
-    # already public via the base allow-80/443 rule, and PostgreSQL never
-    # leaves the loopback interface, so there is nothing left to gate behind
-    # a monitor IP (see base_setup.py / NOTES.md). Not asked here for that
-    # reason, not because it was forgotten.
+    monitor_prompt = ("monitoring host IP (allowed through UFW to Patroni/etcd/"
+                      "HAProxy/Authentik ports; Enter to skip)" if topology == "ha" else
+                      "monitoring host IP (allowed through UFW to nginx's stub_status "
+                      "port; Enter to skip)")
+    monitor_ip = _ask(monitor_prompt, default="-",
+                      validate=lambda v: None if v == "-" else _valid_ip(v))
+    monitor_ip = "" if monitor_ip == "-" else monitor_ip
 
     cfg = {
         "site": {"name": site, "environment": env, "topology": topology,

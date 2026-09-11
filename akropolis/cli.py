@@ -34,7 +34,6 @@ from .update import check_for_update, check_update_now, self_update
 from .phases.base import PhaseContext, run_phases
 from .phases.authentik_phase import AuthentikPhase
 from .phases.authentik_single_phase import AuthentikSinglePhase
-from .phases.authentik_certs_phase import AuthentikCertsPhase
 from .phases.authentik_lifecycle import AuthentikShutdownPhase, AuthentikStartPhase
 from .phases.restore_single_phase import RestoreSinglePhase
 from .phases.handoff_single_phase import HandoffSinglePhase
@@ -44,6 +43,7 @@ from .phases.etcd_phase import EtcdPhase
 from .phases.handoff_phase import HandoffPhase
 from .phases.haproxy_phase import HAProxyPhase
 from .phases.nginx_keepalived_phase import NginxKeepalivedPhase
+from .phases.nginx_single_phase import NginxSinglePhase
 from .phases.tls_phase import TLSPhase
 from .phases.patroni_phase import PatroniPhase
 from .phases.preflight import PreflightPhase
@@ -55,13 +55,14 @@ console = Console()
 
 # Ordered phase pipeline — topology-dependent. `ha` is the full 3-node stack;
 # `single` drops etcd/Patroni/HAProxy/keepalived entirely (see config.py
-# DEFAULT_AUTHENTIK_TAG / REQUIRED_FREE_PORTS_SINGLE for the reasoning), and
-# has no `tls`/nginx phase either — authentik's own core webserver serves
-# HTTPS directly (port 443 — see authentik-single-env.j2), so `certs` talks
-# to authentik's own certificate discovery + Web Certificate API instead of
-# rendering an nginx cert directory (see authentik_certs_phase.py). `clean`
-# is topology-aware too (see clean_phase.py) — invoked as its own subcommand,
-# not part of either pipeline below.
+# DEFAULT_AUTHENTIK_TAG / REQUIRED_FREE_PORTS_SINGLE for the reasoning).
+# Both topologies now get a reverse proxy that terminates public TLS and
+# serves a maintenance page while `akropolis shutdown` has authentik down:
+# `ha`'s is containerized + VRRP (nginx_keepalived_phase.py), `single`'s is
+# bare-metal (nginx_single_phase.py) — condensed for one node, no VRRP/
+# keepalived, no distribution keypair. `clean` is topology-aware too (see
+# clean_phase.py) — invoked as its own subcommand, not part of either
+# pipeline below.
 PIPELINE_HA = [
     PreflightPhase(),
     BasePhase(),
@@ -78,7 +79,7 @@ PIPELINE_SINGLE = [
     PreflightPhase(),
     BasePhase(),
     AuthentikSinglePhase(),
-    AuthentikCertsPhase(),
+    NginxSinglePhase(),
     RestoreSinglePhase(),   # no-op unless restore.sql_file is set
     HandoffSinglePhase(),
 ]

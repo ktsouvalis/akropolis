@@ -17,9 +17,12 @@ from .base import Phase, PhaseContext
 # state file so a mid-lifecycle re-run (resume, --replay of a later phase)
 # doesn't fail on the cluster's own footprint. Nested by topology: `authentik`
 # means something port-wise different on each (HA proxies through nginx on
-# 9443 internally; single serves 443 directly, see authentik-single-env.j2 —
-# same phase *name*, different footprint, so one shared dict would be wrong
-# for whichever topology looked it up second).
+# 9443 internally, network_mode: host; single publishes 9000/9443 to
+# loopback only, see authentik-single-compose.yml.j2 — same phase *name*,
+# different footprint, so one shared dict would be wrong for whichever
+# topology looked it up second). Both topologies now have their own `nginx`
+# entry too — HA's is containerized+VRRP (nginx-keepalived), single's is
+# bare-metal (nginx_single_phase.py) — public 80/443 either way.
 PHASE_PORTS: dict[str, dict[str, set[int]]] = {
     "ha": {
         "etcd": {2379, 2380},
@@ -29,9 +32,8 @@ PHASE_PORTS: dict[str, dict[str, set[int]]] = {
         "authentik": {9080, 9081, 9300, 9301, 9443},
     },
     "single": {
-        "authentik": {443},
-        # certs: no new port footprint — it only places files and restarts
-        # the worker container that authentik already started.
+        "authentik": {9000, 9443},  # loopback-only — see authentik-single-compose.yml.j2
+        "nginx": {80, 443},
     },
 }
 PHASE_CONTAINERS: dict[str, str] = {
@@ -47,7 +49,7 @@ PHASE_CONTAINERS: dict[str, str] = {
 PHASES_BY_TOPOLOGY: dict[str, tuple[str, ...]] = {
     "ha": ("base", "etcd", "patroni", "haproxy", "tls", "nginx-keepalived", "authentik",
            "restore", "handoff"),
-    "single": ("base", "authentik", "certs", "restore", "handoff"),
+    "single": ("base", "authentik", "nginx", "restore", "handoff"),
 }
 
 
@@ -195,6 +197,9 @@ class PreflightPhase(Phase):
                 if "nginx-keepalived" not in done and \
                         conn.run("systemctl is-enabled keepalived >/dev/null 2>&1").ok:
                     artifacts.append("keepalived enabled")
+                if cfg.topology == "single" and "nginx" not in done and \
+                        conn.run("systemctl is-enabled nginx >/dev/null 2>&1").ok:
+                    artifacts.append("nginx enabled")
                 ctx.record(node, "no existing cluster artifacts", not artifacts,
                            "; ".join(artifacts) if artifacts else "clean host",
                            warn=(bool(artifacts) and midlife))

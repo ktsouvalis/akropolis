@@ -44,7 +44,6 @@ import shlex
 import time
 from pathlib import Path
 
-from .authentik_certs_phase import set_web_certificate
 from .authentik_phase import (apply_brand, dump_logs, remint_bootstrap_token,
                               token_alive, wait_healthy, wait_one_healthy)
 from .base import Phase, PhaseContext
@@ -130,9 +129,7 @@ class RestoreSinglePhase(Phase):
             "re-mint the bootstrap API token into the restored database (via 'ak shell' "
             "in the worker — the dump brought its own tokens and the env-file bootstrap "
             "no longer applies once an akadmin exists)",
-            "re-apply branding and, for acme/import, the default brand's web_certificate "
-            "— both live in the database the dump just replaced, and a brand pointing at "
-            "a keypair that isn't here makes authentik serve its self-signed cert instead",
+            "re-apply branding — it lives in the database the dump just replaced",
             "verify: restored DB has tables + users, server+worker healthy",
         ]
 
@@ -272,8 +269,8 @@ class RestoreSinglePhase(Phase):
             raise RuntimeError("node never became healthy on the restored database")
 
         # --- put back what DROP DATABASE took ---------------------------------
-        # Three things provisioned before this phase live IN the database, not
-        # in a config file, so the restore replaced all of them with whatever
+        # Two things provisioned before this phase live IN the database, not
+        # in a config file, so the restore replaced both of them with whatever
         # the dump's source instance had:
         #
         #   1. the bootstrap API token  — gone; the dump has the old instance's
@@ -282,43 +279,26 @@ class RestoreSinglePhase(Phase):
         #      the restored database already contains an akadmin, so the
         #      bootstrap is a no-op on the next worker start.
         #   2. the default brand's branding (logo/favicon/title)
-        #   3. the default brand's web_certificate — and THIS is the one that
-        #      hurts. On single-node topology authentik's own webserver
-        #      terminates TLS using that column; with it pointing at a keypair
-        #      that does not exist here, the node quietly falls back to its
-        #      self-signed certificate and the result presents as "the
-        #      dashboard and the user list don't load properly", nowhere near
-        #      anything the operator would think to look at.
+        #
+        # TLS is no longer one of these: nginx (see nginx_single_phase.py)
+        # terminates it now, from plain files on the host, entirely outside
+        # the database — DROP DATABASE has nothing to say about it anymore.
         #
         # So: re-mint the token through the ORM inside the worker container
         # (the only path that does not need a working token to begin with),
-        # then redo 2 and 3 exactly as the earlier phases did.
+        # then redo branding exactly as the earlier phase did.
         token = ctx.state.data["generated"].get("authentik_bootstrap_token", "")
-        tok_ok_now = token_alive(conn, token, port=443) if token else False
+        tok_ok_now = token_alive(conn, token, port=9443) if token else False
         if token and not tok_ok_now:
-            tok_ok_now = remint_bootstrap_token(ctx, conn, token, port=443)
+            tok_ok_now = remint_bootstrap_token(ctx, conn, token, port=9443)
 
         branding = (ctx.cfg.raw.get("authentik") or {}).get("branding") or {}
         if branding and tok_ok_now:
-            apply_brand(ctx, conn, branding, token, port=443)
+            apply_brand(ctx, conn, branding, token, port=9443)
         elif branding:
             ctx.record(node, "branding re-apply skipped", True,
                        "no working API token against the restored database — "
                        "re-apply the branding by hand in System > Brands", warn=True)
-
-        # web_certificate: only meaningful when akropolis actually installed a
-        # certificate for authentik to serve (none/self_signed leave authentik
-        # on its own generated one, which is unaffected by the restore).
-        if ctx.cfg.tls.provider in ("acme", "import"):
-            if tok_ok_now:
-                set_web_certificate(ctx, conn, token, ctx.cfg.tls.hostname)
-            else:
-                ctx.record(node, "web certificate re-apply skipped", False,
-                           "the restored brand does not carry this node's certificate and "
-                           "there is no working API token to fix it — set System > Brands "
-                           "> Web Certificate to "
-                           f"{ctx.cfg.tls.hostname!r} by hand, or the node will serve its "
-                           "self-signed certificate", warn=True)
 
     # ---------------------------------------------------------------- verify
     def verify(self, ctx: PhaseContext) -> bool:
@@ -347,7 +327,7 @@ class RestoreSinglePhase(Phase):
         token = ctx.state.data["generated"].get("authentik_bootstrap_token", "")
         tok_ok = True
         if token:
-            tok_ok = token_alive(conn, token, port=443)
+            tok_ok = token_alive(conn, token, port=9443)
             ctx.record(node, "bootstrap API token valid against restored database", tok_ok,
                        "" if tok_ok else
                        "the restore replaced the database this token lived in and "
@@ -358,7 +338,7 @@ class RestoreSinglePhase(Phase):
         good = wait_healthy(ctx, conn, timeout=60, label="verify: healthy gate")
         ctx.record(node, "verify: containers healthy", good, "")
         r = conn.run("curl -sk -o /dev/null -w '%{http_code}' "
-                     "https://127.0.0.1:443/-/health/ready/")
+                     "https://127.0.0.1:9443/-/health/ready/")
         ready = r.out in ("200", "204")
         ctx.record(node, "verify: /-/health/ready/", ready, f"HTTP {r.out}")
 

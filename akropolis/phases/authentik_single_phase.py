@@ -15,10 +15,14 @@ two real bugs before a real run surfaced them: the worker inheriting and
 squatting the server's HTTPS port, and the server itself needing
 CAP_NET_BIND_SERVICE to bind a privileged port at all. Neither is possible
 once each container has its own isolated network namespace: the server's
-own internal port (9443) is never privileged, Docker's own port publish
-(root/dockerd, not the containerized process) maps host 443 to it, and
-server/worker can never see each other's ports to conflict over. See
-NOTES.md for the full story.
+own internal ports (9443/9000) are never privileged, and server/worker can
+never see each other's ports to conflict over. See NOTES.md for the full
+story.
+
+A bare-metal nginx (see nginx_single_phase.py, the phase right after this
+one) is what the public actually reaches on 80/443 — Docker's own port
+publish maps both of the server's ports to loopback only (see
+authentik-single-compose.yml.j2), never to a host-wide address.
 
 Deliberately reuses the exact same on-disk path as the HA phase
 (/opt/authentik), so the health-gate, log-dump, and branding helpers from
@@ -28,10 +32,7 @@ is the same on both topologies).
 
 TODO(cleanup): _email()/_branding_volumes()/_acfg() below are near-identical
 copies of the same methods on AuthentikPhase (HA). Left duplicated rather
-than restructuring that already-deployed file in this patch — the only
-change made there is additive (an optional `port` parameter on
-apply_brand/patch_brand, default 9443, so HA is unaffected — see
-authentik_certs_phase.py, which reuses patch_brand at port 443). Unifying
+than restructuring that already-deployed file in this patch. Unifying
 _email/_branding_volumes/_acfg, and wiring the error-reporting prompt into
 the HA phase (which still hardcodes AUTHENTIK_ERROR_REPORTING__ENABLED=false),
 is a good follow-up once single-node has seen a real run.
@@ -168,8 +169,9 @@ class AuthentikSinglePhase(Phase):
             "server, worker: ordinary isolated containers (no network_mode: host, "
             "no AUTHENTIK_LISTEN__* overrides needed — nothing to conflict over), "
             "both depend only on postgresql being healthy, python3/urllib "
-            "healthchecks. Docker publishes host 443 -> the server container's "
-            "own 9443 (never a privileged port, so no cap_add either)",
+            "healthchecks. Docker publishes the server's 9443/9000 to LOOPBACK "
+            "only (never privileged, so no cap_add either) — the nginx phase "
+            "right after this one is what the public actually reaches",
             "AUTHENTIK_SECRET_KEY / postgres password / bootstrap admin password / "
             "bootstrap API token: generated once, pinned in state, never printed",
         ]
@@ -267,7 +269,7 @@ class AuthentikSinglePhase(Phase):
 
         branding_cfg = acfg.get("branding") or {}
         if branding_cfg:
-            apply_brand(ctx, conn, branding_cfg, sec["bootstrap_token"], port=443)
+            apply_brand(ctx, conn, branding_cfg, sec["bootstrap_token"], port=9443)
 
         pin_applied_tag(ctx, self.name, cfg.authentik_tag)
 
@@ -279,7 +281,7 @@ class AuthentikSinglePhase(Phase):
         ctx.record(node, "verify: containers healthy", good, "")
 
         r = conn.run("curl -sk -o /dev/null -w '%{http_code}' "
-                     "https://127.0.0.1:443/-/health/ready/")
+                     "https://127.0.0.1:9443/-/health/ready/")
         ready = r.out in ("200", "204")
         ctx.record(node, "verify: /-/health/ready/", ready, f"HTTP {r.out}")
 
@@ -287,7 +289,7 @@ class AuthentikSinglePhase(Phase):
         r2 = conn.run(
             f"curl -sk -H {shlex.quote('Authorization: Bearer ' + token)} "
             f"-o /dev/null -w '%{{http_code}}' "
-            f"https://127.0.0.1:443/api/v3/admin/version/")
+            f"https://127.0.0.1:9443/api/v3/admin/version/")
         api = r2.out == "200"
         ctx.record(node, "verify: API with bootstrap token", api, f"HTTP {r2.out}")
         return good and ready and api

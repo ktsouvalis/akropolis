@@ -22,17 +22,21 @@ site:
   # topology: ha                  # ha (default) | single
                                   #   ha: the 3-node stack below (etcd/Patroni/HAProxy/
                                   #   nginx+keepalived). single: one node, no VIP,
-                                  #   PostgreSQL as a plain container, see `nodes:` below.
-                                  #   Changes exactly-3 → exactly-1 node requirement,
-                                  #   default authentik.tag, and required free ports.
+                                  #   PostgreSQL as a plain container, and a bare-metal
+                                  #   (not containerized) nginx in front terminating TLS
+                                  #   and serving the maintenance page — see `nodes:`
+                                  #   below. Changes exactly-3 → exactly-1 node
+                                  #   requirement, default authentik.tag, and required
+                                  #   free ports.
 
 # Provisioner behavior
 provision:
   state_file: .state/example-site.json   # phase completion + rendered-config checksums (resumability)
   refuse_existing: true              # preflight FAILS if a node already has /etc/patroni,
-                                     # running ak containers, or an enabled keepalived unit.
-                                     # Override per-run with --adopt (never silently).
-                                     # Important when test VMs share a subnet with prod.
+                                     # running ak containers, or an enabled keepalived/
+                                     # nginx unit (single: nginx only). Override per-run
+                                     # with --adopt (never silently). Important when test
+                                     # VMs share a subnet with prod.
 
 # ---------------------------------------------------------------------------
 # SSH access (provisioning only, never written into the monitor config)
@@ -145,6 +149,15 @@ tls:
   #               key match + SAN coverage of `hostname`, distributes, reloads.
   #               No renewal exists: expiry is written into the emitted monitor
   #               config so ak-monitor alerts on it.
+  #
+  # single-node topology: this whole block means the same thing, served by a
+  # bare-metal (not containerized) nginx instead of the HA cluster's
+  # container+keepalived pair — see nginx_single_phase.py. No VIP/priorities/
+  # SSH-distribution concepts apply (one node): self_signed's SANs are just
+  # hostname (or the node's own IP if left blank) + the node IP, and acme's
+  # deploy hook re-copies + reloads nginx locally, no cross-node distribution.
+  # provider: none is genuinely plain HTTP end-to-end here too (nginx proxies
+  # straight to authentik's own HTTP listener).
 
   hostname: auth-test.example.com      # public FQDN; must resolve to VIP for acme
 
@@ -254,7 +267,8 @@ monitor:
   output: ./config.example-site.monitor.yml
   # ip: 10.0.0.90               # the ak-monitor host; the base phase adds a UFW rule
                                   # allowing it to 2379,5000,5001,8008,9000,9443/tcp on
-                                  # every node. Omit → asked interactively (Enter to skip;
+                                  # every node (ha) or just 8080/tcp, nginx's stub_status
+                                  # (single). Omit → asked interactively (Enter to skip;
                                   # the answer is pinned in state).
   # Emitted contents: nodes/IPs, VIP, Patroni REST :8008, etcd :2379,
   # HAProxy stats :9000 (csv), Authentik health endpoints, worker check via

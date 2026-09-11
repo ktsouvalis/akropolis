@@ -17,15 +17,17 @@ nodes:
       name: "{{ node.name }}"
 
 ports:
-  # authentik's own core webserver — no nginx in front on single-node, so
-  # this is the port the public actually hits (see akropolis NOTES.md).
+  # The bare-metal nginx in front of the node — this is the port the public
+  # (and this probe) actually hits, not authentik's own container port.
   authentik: {{ authentik_port }}
   # Authentik WORKER liveness — a SEPARATE port (9081), never {{ authentik_port }}:
   # the worker binds its own HTTP listener so it does not squat the server's.
   authentik_worker: 9081
+  nginx_status: 8080
 
 scheme:
-  authentik: "https"                   # server health is HTTPS on {{ authentik_port }}
+  # https on {{ authentik_port }}, or plain http for tls.provider 'none' (testing only)
+  authentik: "{{ authentik_scheme }}"
   authentik_worker: "http"             # worker liveness is plain HTTP on 9081
   # Emitted false always, whatever tls.provider is: the monitor probes the
   # node at its IP and no certificate here names an IP, so verification
@@ -53,6 +55,10 @@ services:
     nodes: authentik
     type: docker
     container: "authentik-postgresql-1"
+  - label: "Reverse Proxy"
+    nodes: authentik
+    type: systemd
+    unit: "nginx"
 
 authentik:
   url: "{{ authentik_url }}"

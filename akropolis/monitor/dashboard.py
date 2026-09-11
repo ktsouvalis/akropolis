@@ -49,9 +49,19 @@ CONFIG_PATH = "config.yml"
 CFG: dict = {}
 
 SITE_NAME        = "Authentik HA Cluster"
+TOPOLOGY         = "ha"
 REFRESH_INTERVAL = 30
 HTTP_TIMEOUT     = 4
 VIP              = ""
+# The admin-API host for the worker/queue checks: on ha, any node answers
+# through the VIP/LB; single has no VIP at all, so this is its one node's
+# own IP instead (set in load_site(), once AK_NODES is known).
+PRIMARY_HOST     = ""
+# Which node list check_nginx_status() iterates: ha's nginx runs on the 3
+# keepalived nodes; single's is bare-metal on the same one node as AK_NODES
+# (single has no `keepalived:` section at all, so KA_NODES is always []
+# there — the reason "NGINX CONNECTIONS" used to spin forever on single).
+NGINX_NODES      = []
 
 AK_NODES      = []
 PATRONI_NODES = []
@@ -76,6 +86,13 @@ PG_PASS               = ""
 NGINX_SCHEME = "https"
 NGINX_PORT   = 443
 VERIFY_TLS   = False
+# Scheme for Authentik's own health/API endpoints (check_authentik_node,
+# check_authentik_workers, check_authentik_task_queue). Always "https" on
+# ha (AUTHENTIK_LISTEN__HTTPS is set regardless of nginx's own TLS
+# provider). On single, `ports.authentik`/`scheme.authentik` are the
+# bare-metal nginx's own public port (see monitor-config-single.yml.j2),
+# which is genuinely plain HTTP for tls.provider: none.
+AUTHENTIK_SCHEME = "https"
 
 
 def nginx_url(host: str, path: str = "/monitor") -> str:
@@ -93,11 +110,11 @@ def load_site(path: str) -> dict:
     ClusterMonitor; nothing above is valid until it has run once.
     """
     global CONFIG_PATH, CFG
-    global SITE_NAME, REFRESH_INTERVAL, HTTP_TIMEOUT, VIP
+    global SITE_NAME, TOPOLOGY, REFRESH_INTERVAL, HTTP_TIMEOUT, VIP, PRIMARY_HOST, NGINX_NODES
     global AK_NODES, PATRONI_NODES, ETCD_NODES, HAPROXY_NODES, KA_NODES, TRACK_WEIGHT
     global P_AUTHENTIK, P_PATRONI, P_ETCD, P_HAPROXY, P_NGINX_STATUS, P_POSTGRES
     global HAPROXY_USER, HAPROXY_PASS, AUTHENTIK_API_TOKEN, PG_USER, PG_PASS
-    global NGINX_SCHEME, NGINX_PORT, VERIFY_TLS
+    global NGINX_SCHEME, NGINX_PORT, VERIFY_TLS, AUTHENTIK_SCHEME
     global _UNICODE, _BULLET, OK, DOWN, WARN, GREY
 
     if not os.path.exists(path):
@@ -109,6 +126,7 @@ def load_site(path: str) -> dict:
     CONFIG_PATH = path
 
     SITE_NAME        = CFG.get("site_name", "Authentik HA Cluster")
+    TOPOLOGY         = CFG.get("topology", "ha")
     REFRESH_INTERVAL = int(CFG.get("refresh_interval", 30))
     HTTP_TIMEOUT     = int(CFG.get("http_timeout", 4))
     VIP              = CFG.get("vip", "")
@@ -124,6 +142,11 @@ def load_site(path: str) -> dict:
     HAPROXY_NODES = nodes.get("haproxy", [])
     KA_NODES      = ka_cfg.get("nodes", [])
     TRACK_WEIGHT  = int(ka_cfg.get("track_weight", -20))
+
+    # single has no VIP and no keepalived nodes at all (see the globals'
+    # own comments above) — fall back to the one node directly for both.
+    PRIMARY_HOST = VIP if TOPOLOGY != "single" else (AK_NODES[0]["ip"] if AK_NODES else "")
+    NGINX_NODES  = KA_NODES if TOPOLOGY != "single" else AK_NODES
 
     P_AUTHENTIK    = int(ports.get("authentik", 9443))
     P_PATRONI      = int(ports.get("patroni", 8008))
@@ -151,14 +174,18 @@ def load_site(path: str) -> dict:
     # exactly (https, :443, no certificate verification), so an existing
     # production config.yml keeps working untouched.
     #
-    # Authentik's own health and API endpoints are deliberately NOT covered
-    # here: AUTHENTIK_LISTEN__HTTPS is set regardless of the nginx TLS
-    # provider, so :9443 is always HTTPS (self-signed on a lab site) and
-    # stays as it was.
-    scheme_cfg   = CFG.get("scheme", {}) or {}
-    NGINX_SCHEME = str(scheme_cfg.get("nginx", "https")).lower()
-    NGINX_PORT   = int(scheme_cfg.get("nginx_port", 443 if NGINX_SCHEME == "https" else 80))
-    VERIFY_TLS   = bool(scheme_cfg.get("verify_tls", False))
+    # Authentik's own health and API endpoints, on ha, are deliberately NOT
+    # covered by the nginx scheme above: AUTHENTIK_LISTEN__HTTPS is set
+    # regardless of the nginx TLS provider, so :9443 is always HTTPS
+    # (self-signed on a lab site) and stays as it was. On single, though,
+    # `ports.authentik`/`scheme.authentik` ARE the bare-metal nginx's own
+    # public port (see monitor-config-single.yml.j2) — genuinely plain HTTP
+    # for tls.provider: none — hence its own scheme key, read here.
+    scheme_cfg       = CFG.get("scheme", {}) or {}
+    NGINX_SCHEME     = str(scheme_cfg.get("nginx", "https")).lower()
+    NGINX_PORT       = int(scheme_cfg.get("nginx_port", 443 if NGINX_SCHEME == "https" else 80))
+    VERIFY_TLS       = bool(scheme_cfg.get("verify_tls", False))
+    AUTHENTIK_SCHEME = str(scheme_cfg.get("authentik", "https")).lower()
 
     # unicode_bullets can only be honoured once CFG is loaded, so the dot
     # indicators (defined further down, computed once at import time from
@@ -410,13 +437,24 @@ def check_haproxy_node(node: dict) -> dict:
 def check_authentik_node(node: dict) -> dict:
     ip = node["ip"]
     try:
-        r = requests.get(f"https://{ip}:{P_AUTHENTIK}/-/health/live/",
+        r = requests.get(f"{AUTHENTIK_SCHEME}://{ip}:{P_AUTHENTIK}/-/health/live/",
                          timeout=HTTP_TIMEOUT, verify=False)
         server_ok = r.status_code in (200, 204)
     except Exception:
         server_ok = False
+    # /-/health/ready/ additionally covers DB connectivity (unlike /live/,
+    # a liveness-only probe) — the closest thing to a Postgres health signal
+    # reachable from here on single, where the postgres container publishes
+    # no port at all, not even to loopback (see
+    # authentik-single-compose.yml.j2 / handoff_single_phase.py).
+    try:
+        r = requests.get(f"{AUTHENTIK_SCHEME}://{ip}:{P_AUTHENTIK}/-/health/ready/",
+                         timeout=HTTP_TIMEOUT, verify=False)
+        ready_ok = r.status_code in (200, 204)
+    except Exception:
+        ready_ok = False
     return {"ip": ip, "name": node.get("name", ip),
-            "server_ok": server_ok}
+            "server_ok": server_ok, "ready_ok": ready_ok}
 
 
 def check_authentik_task_queue() -> dict:
@@ -429,7 +467,7 @@ def check_authentik_task_queue() -> dict:
         return {"ok": None, "error": "no token configured"}
     try:
         r = requests.get(
-            f"https://{VIP}:{P_AUTHENTIK}/api/v3/tasks/tasks/status/",
+            f"{AUTHENTIK_SCHEME}://{PRIMARY_HOST}:{P_AUTHENTIK}/api/v3/tasks/tasks/status/",
             headers={"Authorization": f"Bearer {AUTHENTIK_API_TOKEN}"},
             timeout=HTTP_TIMEOUT,
             verify=False,
@@ -462,6 +500,13 @@ def check_authentik_workers() -> dict:
 
     worker_id format is "<uuid>@<hostname>", so we map each connection back
     to its node and flag any node with zero connected workers.
+
+    That hostname-matching is meaningless on single topology: neither
+    compose template sets an explicit `hostname:` on the worker service, so
+    Docker assigns it a random short container ID as its own hostname,
+    which can never equal the configured node name. With exactly one node
+    there, "at least one worker connected" is the only signal that means
+    anything anyway — handled as a special case below.
     """
     expected = [n.get("name", n["ip"]) for n in AK_NODES]
     if not AUTHENTIK_API_TOKEN:
@@ -470,7 +515,7 @@ def check_authentik_workers() -> dict:
                 "present": [], "missing": expected, "mismatched": []}
     try:
         r = requests.get(
-            f"https://{VIP}:{P_AUTHENTIK}/api/v3/tasks/workers/",
+            f"{AUTHENTIK_SCHEME}://{PRIMARY_HOST}:{P_AUTHENTIK}/api/v3/tasks/workers/",
             headers={"Authorization": f"Bearer {AUTHENTIK_API_TOKEN}"},
             timeout=HTTP_TIMEOUT, verify=False,
         )
@@ -484,6 +529,18 @@ def check_authentik_workers() -> dict:
                     "present": [], "missing": expected, "mismatched": []}
 
         workers = r.json() if isinstance(r.json(), list) else []
+
+        if TOPOLOGY == "single":
+            any_mismatched = any(w.get("version_matching") is False for w in workers)
+            present    = expected if workers else []
+            missing    = [] if workers else expected
+            mismatched = expected if any_mismatched else []
+            return {
+                "ok": True, "error": None,
+                "count": len(workers), "expected": len(expected),
+                "present": present, "missing": missing, "mismatched": mismatched,
+            }
+
         present, mismatched = [], []
         for w in workers:
             wid  = w.get("worker_id", "")
@@ -563,6 +620,26 @@ def failures_to_dot(failures: int) -> str:
     elif failures >= 2:
         return WARN
     return OK
+
+
+# failures_to_dot()'s thresholds (>=3 red, >=2 yellow) are calibrated for
+# "how many of 3 nodes are down" — meaningless for single topology's 1-node
+# fail count of 0 or 1. Used by the single-node panels/title instead.
+def _dot_binary(failed: bool) -> str:
+    return DOWN if failed else OK
+
+
+def _worst_dot(*dots: str) -> str:
+    """The most severe of several already-computed dots (OK < WARN < DOWN),
+    for a single-node central status dot built from its few panels.
+
+    Builds the severity map fresh from the CURRENT OK/WARN/DOWN globals on
+    every call rather than once at import time: load_site() reassigns those
+    three strings once the config's unicode_bullets setting is known, and a
+    dict frozen before that would key on stale (pre-config) bullet strings.
+    """
+    severity = {OK: 0, WARN: 1, DOWN: 2}
+    return max(dots, key=lambda d: severity.get(d, 0), default=OK)
 
 
 # ---------------------------------------------------------------------------
@@ -805,8 +882,13 @@ class AuthentikPanel(Static):
             name = node["name"]
             sv   = node.get("server_ok", False)
             sv_str   = f"{OK} [green]server[/]" if sv else f"{DOWN} [red]server[/]"
+            ready = node.get("ready_ok")
+            ready_str = ""
+            if ready is not None:
+                ready_str = (f"  {OK} [green]ready[/]" if ready
+                            else f"  {DOWN} [red]ready[/]")
             overall = OK if sv else DOWN
-            lines.append(f"  {overall} {name:<14} {sv_str}")
+            lines.append(f"  {overall} {name:<14} {sv_str}{ready_str}")
         return "\n".join(lines)
 
     def watch_data(self, data: list) -> None:
@@ -1012,6 +1094,21 @@ class ClusterMonitor(App):
         yield Static(f"  {GREY}  {SITE_NAME}", id="title")
         yield StatusBar(id="statusbar")
 
+        if TOPOLOGY == "single":
+            # No VIP/keepalived/HAProxy/Patroni/etcd on this topology at
+            # all (config.py: single is one node, no VIP, PostgreSQL as a
+            # plain container) — just the four services that actually exist.
+            yield AuthentikPanel("  [dim]Checking...[/]",
+                                 id="panel-authentik", classes="panel")
+            yield WorkersPanel("  [dim]Checking...[/]",
+                               id="panel-workers", classes="panel")
+            yield WorkerQueuePanel("  [dim]Checking...[/]",
+                                   id="panel-worker-queue", classes="panel")
+            yield NginxPanel("  [dim]Checking...[/]",
+                             id="panel-nginx", classes="panel")
+            yield Footer()
+            return
+
         yield KeepalivedPanel("  [dim]Checking...[/]",
                               id="panel-keepalived", classes="panel")
         yield NginxPanel("  [dim]Checking...[/]",
@@ -1035,14 +1132,20 @@ class ClusterMonitor(App):
         yield Footer()
 
     def on_mount(self) -> None:
-        self.query_one("#panel-keepalived").border_title  = f" {GREY}  VIP / KEEPALIVED / NGINX  "
-        self.query_one("#panel-nginx").border_title       = f" {GREY}  NGINX CONNECTIONS  "
-        self.query_one("#panel-patroni").border_title     = f" {GREY}  POSTGRESQL / PATRONI  "
-        self.query_one("#panel-etcd").border_title        = f" {GREY}  ETCD CLUSTER  "
-        self.query_one("#panel-haproxy").border_title        = f" {GREY}  HAPROXY BACKENDS  "
         self.query_one("#panel-authentik").border_title     = f" {GREY}  AUTHENTIK BACKENDS  "
         self.query_one("#panel-worker-queue").border_title  = f" {GREY}  AUTHENTIK WORKER QUEUE  "
         self.query_one("#panel-workers").border_title       = f" {GREY}  AUTHENTIK WORKERS  "
+
+        if TOPOLOGY == "single":
+            # One bare-metal instance, not per-node "connections" across a
+            # 3-node cluster — plain title rather than ha's "NGINX CONNECTIONS".
+            self.query_one("#panel-nginx").border_title = f" {GREY}  NGINX  "
+        else:
+            self.query_one("#panel-nginx").border_title       = f" {GREY}  NGINX CONNECTIONS  "
+            self.query_one("#panel-keepalived").border_title  = f" {GREY}  VIP / KEEPALIVED / NGINX  "
+            self.query_one("#panel-patroni").border_title     = f" {GREY}  POSTGRESQL / PATRONI  "
+            self.query_one("#panel-etcd").border_title        = f" {GREY}  ETCD CLUSTER  "
+            self.query_one("#panel-haproxy").border_title     = f" {GREY}  HAPROXY BACKENDS  "
 
         self.set_interval(REFRESH_INTERVAL, self.action_refresh_now)
         self.action_refresh_now()
@@ -1050,15 +1153,28 @@ class ClusterMonitor(App):
     @work(thread=True)
     def action_refresh_now(self) -> None:
         with ThreadPoolExecutor(max_workers=32) as ex:
-            f_vip          = ex.submit(check_vip_holder)
-            f_ka           = [ex.submit(check_keepalived_node, n) for n in KA_NODES]
-            f_patroni      = [ex.submit(check_patroni_node,   n) for n in PATRONI_NODES]
-            f_etcd         = [ex.submit(check_etcd_node,      n) for n in ETCD_NODES]
-            f_haproxy      = [ex.submit(check_haproxy_node,   n) for n in HAPROXY_NODES]
             f_authentik    = [ex.submit(check_authentik_node, n) for n in AK_NODES]
-            f_nginx        = [ex.submit(check_nginx_status,   n) for n in KA_NODES]
+            f_nginx        = [ex.submit(check_nginx_status,   n) for n in NGINX_NODES]
             f_worker_queue = ex.submit(check_authentik_task_queue)
             f_workers      = ex.submit(check_authentik_workers)
+
+            if TOPOLOGY == "single":
+                authentik_data    = [f.result() for f in f_authentik]
+                nginx_data        = [f.result() for f in f_nginx]
+                workers_data      = f_workers.result()
+                worker_queue_data = f_worker_queue.result()
+                ts = datetime.now().strftime("%H:%M:%S")
+                self.call_from_thread(
+                    self._apply_updates_single,
+                    authentik_data, nginx_data, worker_queue_data, workers_data, ts,
+                )
+                return
+
+            f_vip     = ex.submit(check_vip_holder)
+            f_ka      = [ex.submit(check_keepalived_node, n) for n in KA_NODES]
+            f_patroni = [ex.submit(check_patroni_node,   n) for n in PATRONI_NODES]
+            f_etcd    = [ex.submit(check_etcd_node,      n) for n in ETCD_NODES]
+            f_haproxy = [ex.submit(check_haproxy_node,   n) for n in HAPROXY_NODES]
 
             # Patroni results needed first to identify the primary for dependent queries
             patroni_data = [f.result() for f in f_patroni]
@@ -1093,6 +1209,54 @@ class ClusterMonitor(App):
             authentik_data,
             nginx_data, worker_queue_data, workers_data, ts,
         )
+
+    def _apply_updates_single(
+        self, authentik_data, nginx_data, worker_queue_data, workers_data, ts,
+    ):
+        self.query_one("#panel-authentik",    AuthentikPanel).data   = authentik_data
+        self.query_one("#panel-nginx",        NginxPanel).data       = nginx_data
+        self.query_one("#panel-worker-queue", WorkerQueuePanel).data = worker_queue_data
+        self.query_one("#panel-workers",      WorkersPanel).data     = workers_data
+
+        authentik_fail = any(not n["server_ok"] for n in authentik_data)
+        nginx_fail     = any(not n["ok"] for n in nginx_data)
+
+        authentik_dot = _dot_binary(authentik_fail)
+        nginx_dot     = _dot_binary(nginx_fail)
+
+        self.query_one("#panel-authentik").border_title = (
+            f" {authentik_dot}  AUTHENTIK BACKENDS  "
+        )
+        self.query_one("#panel-nginx").border_title = f" {nginx_dot}  NGINX  "
+
+        wq = worker_queue_data
+        wq_dot = (
+            GREY if wq.get("ok") is None
+            else DOWN if wq.get("ok") is False or wq.get("error", 0) > 0
+            else WARN if wq.get("rejected", 0) > 0 or wq.get("warning", 0) > 0
+            else OK
+        )
+        self.query_one("#panel-worker-queue").border_title = (
+            f" {wq_dot}  AUTHENTIK WORKER QUEUE  "
+        )
+
+        wkr = workers_data
+        workers_dot = (
+            GREY if wkr.get("ok") is None
+            else DOWN if wkr.get("ok") is False or wkr.get("missing")
+            else WARN if wkr.get("mismatched")
+            else OK
+        )
+        self.query_one("#panel-workers").border_title = (
+            f" {workers_dot}  AUTHENTIK WORKERS  "
+        )
+
+        central_dot = _worst_dot(authentik_dot, nginx_dot, wq_dot, workers_dot)
+        self.query_one("#title").update(f"  {central_dot}  {SITE_NAME}")
+
+        sb = self.query_one("#statusbar", StatusBar)
+        sb.status_dot   = central_dot
+        sb.last_refresh = ts
 
     def _apply_updates(
         self, vip_data, ka_data,

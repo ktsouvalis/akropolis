@@ -43,16 +43,17 @@ DEFAULT_AUTHENTIK_TAG = {"ha": "2026.5.6", "single": "2026.8.1"}
 REQUIRED_FREE_PORTS = [80, 443, 2379, 2380, 5432, 5000, 5001, 8008, 9000, 9080, 9081, 9300, 9301, 9443]
 # single: no etcd/Patroni/HAProxy at all — PostgreSQL never leaves the
 # compose-internal Docker network (not even loopback-published; reached via
-# service-name DNS). No nginx, no network_mode: host either — server and
-# worker are ordinary isolated containers, each free to use the image's own
-# default ports with nothing to conflict with (see NOTES.md: the earlier
+# service-name DNS). No network_mode: host either — server and worker are
+# ordinary isolated containers, each free to use the image's own default
+# ports with nothing to conflict with (see NOTES.md: the earlier
 # network_mode: host design caused two real bugs before this was found —
 # a worker/server port squat and a privileged-port permission error —
 # neither of which is possible once each container has its own network
-# namespace). Only what's actually published to the HOST needs to be free:
-# 443 (Docker's own port-publish maps it to the server container's internal
-# 9443) and 80, left free by construction for certbot's standalone mode.
-REQUIRED_FREE_PORTS_SINGLE = [80, 443]
+# namespace). A bare-metal nginx (nginx_single_phase.py) is what the public
+# actually reaches on 80/443; server's own 9000/9443 are published to
+# loopback only but still worth a preflight check (nothing should already
+# be squatting them either).
+REQUIRED_FREE_PORTS_SINGLE = [80, 443, 9000, 9443]
 
 
 class ConfigError(Exception):

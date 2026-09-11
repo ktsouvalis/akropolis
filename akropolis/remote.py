@@ -148,13 +148,15 @@ def base_url(cfg) -> str:
     can't independently drift.
     """
     if cfg.topology == "single":
-        # authentik's own core webserver always serves HTTPS on 443 here,
-        # regardless of tls.provider (self-signed on first boot, or a real
-        # cert via acme/import — see authentik_certs_phase.py). hostname can
-        # be blank only for single+self_signed (config.py); fall back to the
-        # node's own IP in that case.
+        # A bare-metal nginx (nginx_single_phase.py) serves 80/443 here now,
+        # not authentik directly. It's plain HTTP for tls.provider 'none'
+        # (testing only, same semantics as ha's 'none' below) and HTTPS
+        # otherwise (self-signed on first boot, or a real cert via
+        # acme/import). hostname can be blank only for single+self_signed
+        # (config.py); fall back to the node's own IP in that case.
         host = cfg.tls.hostname or cfg.nodes[0].ip
-        return f"https://{host}"
+        scheme = "http" if cfg.tls.provider == "none" else "https"
+        return f"{scheme}://{host}"
     if cfg.tls.provider == "none":
         return f"http://{cfg.network.vip}"
     return f"https://{cfg.tls.hostname}"
