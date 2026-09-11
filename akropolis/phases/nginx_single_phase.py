@@ -298,8 +298,14 @@ class NginxSinglePhase(Phase):
             raise RuntimeError("certbot failed — placeholder cert remains in place; "
                                "fix DNS/reachability and --replay this phase")
 
+        # Hardcode the live path rather than trust $RENEWED_LINEAGE: certbot
+        # only sets that variable when *it* invokes the hook (renew /
+        # --deploy-hook). The line below that runs this script once now,
+        # right after issuance, calls it directly via bash — $RENEWED_LINEAGE
+        # would be empty there, so `cp` would silently no-op and leave the
+        # placeholder in place. Mirrors the HA topology's deploy hook template.
         hook = ("#!/bin/sh\n"
-               f"cp \"$RENEWED_LINEAGE/fullchain.pem\" \"$RENEWED_LINEAGE/privkey.pem\" "
+               f"cp {shlex.quote(live)}/fullchain.pem {shlex.quote(live)}/privkey.pem "
                f"{shlex.quote(CERT_DIR)}/\n"
                f"chmod 600 {shlex.quote(PRIVKEY)}\n"
                "systemctl reload nginx\n")

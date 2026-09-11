@@ -11,6 +11,26 @@ dead ends.
 
 ## [Unreleased]
 
+## [2.0.1] - 2026-09-11
+
+### Fixed
+
+- Single topology's ACME finalization (`nginx_single_phase.py`) could leave
+  the 10-year self-signed placeholder cert in place forever even after
+  certbot successfully issued the real one. The generated deploy hook read
+  `$RENEWED_LINEAGE`, an environment variable certbot only sets when *it*
+  invokes a hook (`renew` / `--deploy-hook`); akropolis instead ran the hook
+  directly via `bash` right after issuance to swap the placeholder
+  immediately, so on that call the variable was empty, the `cp` silently
+  no-op'd, and nginx kept serving the placeholder — with no error, since
+  `systemctl reload nginx` still succeeded. The hook now hardcodes
+  `/etc/letsencrypt/live/<hostname>` instead, matching the HA topology's
+  deploy hook template, which never had this bug. Affected sites: run
+  `sudo RENEWED_LINEAGE=/etc/letsencrypt/live/<hostname> bash
+  /etc/letsencrypt/renewal-hooks/deploy/akropolis-nginx-single.sh` to swap
+  the placeholder immediately, or `--replay nginx` to regenerate the fixed
+  hook and rerun issuance.
+
 ## [2.0.0] - 2026-09-11
 
 ### Added
