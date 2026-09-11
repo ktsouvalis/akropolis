@@ -574,7 +574,8 @@ The plan printed before the confirmation prompt calls out the version change (`a
 
 ## Monitoring
 
-`ha` topology only for now — see [Roadmap](#roadmap). The `handoff` phase
+`ha` topology only for now; single-node's smaller schema is not yet
+understood by `akropolis monitor`/`akropolis logs`. The `handoff` phase
 already emitted `config.<site>.monitor.yml` on your workstation; point both
 commands at that file, not at `config.<site>.yml`.
 
@@ -676,12 +677,6 @@ Security posture, stated plainly:
 - SSH passwords, when used, are prompted at runtime and never stored.
 - Generated secrets currently live **in plaintext** inside the state file. That is acceptable for lab work and is flagged as a hard requirement to fix (age/sops encryption or OS keyring) before production use. Treat `.state/` accordingly: it is git-ignored, keep it that way.
 - Imported TLS private keys transit through workstation memory during validation and distribution; they are written only to `/opt/nginx/certs/privkey.pem` (0600) on the nodes.
-
-## Roadmap
-
-teach `akropolis monitor`/`akropolis logs` single-node's smaller schema (they only understand `ha` today — see [Monitoring](#monitoring)) → encrypted state secrets → wider coverage of restore and clean against real dumps and half-built nodes.
-
-A `.deb` was evaluated for 1.0.0 and deferred: the single-file build covers the same ground with one artifact instead of two. It becomes worth doing if akropolis ends up installed on enough machines that `apt remove` and a dpkg-visible version start to matter; see NOTES.md for what it would take.
 
 ## History
 
