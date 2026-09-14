@@ -625,6 +625,12 @@ LDAP password: `source.connection()` inside Authentik reuses the bind
 credentials Authentik already has stored for that source, so there is
 nothing new to prompt for.
 
+Both "no LDAP source is configured in Authentik at all" and "`--source`
+named a slug nothing matches" are checked explicitly and refuse with exit
+code 2, rather than reporting the same "nothing to check" a genuinely clean
+run would — an unconfigured source and a typo'd `--source` are operator
+mistakes worth surfacing, not silence.
+
 Two things worth knowing if your directory differs from this: usernames are
 correlated via the LDAP `uid` attribute (Authentik's default LDAP username
 mapping), and the uniqueness attribute is read as a plain string — a source

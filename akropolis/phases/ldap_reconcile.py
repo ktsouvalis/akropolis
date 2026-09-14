@@ -62,7 +62,9 @@ def _dry_run_script(source_slug: str | None, usernames: list[str] | None = None)
         "sources = LDAPSource.objects.all()\n"
         "if SOURCE_SLUG:\n"
         "    sources = sources.filter(slug=SOURCE_SLUG)\n"
+        "checked = []\n"
         "for source in sources:\n"
+        "    checked.append(source.slug)\n"
         "    try:\n"
         "        uniq_field = source.object_uniqueness_field\n"
         "        base = source.base_dn\n"
@@ -101,7 +103,8 @@ def _dry_run_script(source_slug: str | None, usernames: list[str] | None = None)
         "        rows.append({'source': source.slug, 'username': uname, 'path': lsc.user.path,\n"
         "                     'active': lsc.user.is_active, 'stored': stored,\n"
         "                     'live': live_val, 'status': status})\n"
-        f"print({_MARKER!r} + json.dumps({{'rows': rows, 'errors': errors}}))\n"
+        f"print({_MARKER!r} + json.dumps({{'rows': rows, 'errors': errors,\n"
+        "                                  'sources_checked': checked}))\n"
     )
 
 
@@ -154,12 +157,16 @@ def _run_script(ctx: PhaseContext, conn, py: str, label: str, timeout: int = 120
 
 
 def collect_drift(ctx: PhaseContext, conn, source_slug: str | None = None,
-                  usernames: list[str] | None = None) -> list[dict]:
+                  usernames: list[str] | None = None) -> tuple[list[dict], list[str]]:
+    """Returns (rows, sources_checked) — the caller needs sources_checked to
+    tell "no LDAP source configured / --source typo'd" apart from "sources
+    exist, genuinely nothing to reconcile"; both would otherwise look like
+    an empty row list."""
     data = _run_script(ctx, conn, _dry_run_script(source_slug, usernames),
                        "reading LDAP source drift")
     for err in data.get("errors", []):
         console.print(f"[yellow]⚠ source {err['source']}: {err['detail']}[/yellow]")
-    return data.get("rows", [])
+    return data.get("rows", []), data.get("sources_checked", [])
 
 
 def apply_changes(ctx: PhaseContext, conn, changes: list[dict]) -> list[dict]:
@@ -191,9 +198,21 @@ def run(ctx: PhaseContext, source: str | None = None) -> int:
         console.print("[red]bootstrap leader not found in fleet[/red]")
         return 2
 
-    rows = collect_drift(ctx, conn, source)
+    rows, sources_checked = collect_drift(ctx, conn, source)
+    if source and source not in sources_checked:
+        console.print(f"[red]no LDAP source with slug {source!r} found in Authentik "
+                      f"— refusing to report a false 'nothing to check'.[/red]")
+        return 2
+    if not sources_checked:
+        console.print("[red]no LDAP source configured in Authentik "
+                      "(Directory > Federation and Social login > Sources) "
+                      "— nothing for this command to check.[/red]")
+        return 2
+
     if not rows:
-        console.print("[green]no LDAP-linked users found — nothing to check.[/green]")
+        console.print(f"[green]{len(sources_checked)} LDAP source(s) checked "
+                      f"({', '.join(sources_checked)}) — no linked users on file, "
+                      "nothing to check.[/green]")
         return 0
 
     same = sum(1 for r in rows if r["status"] == "SAME")
@@ -237,7 +256,7 @@ def run(ctx: PhaseContext, source: str | None = None) -> int:
         ok = ok and good
 
     usernames = [r["username"] for r in confirmed]
-    verify_rows = collect_drift(ctx, conn, source, usernames=usernames)
+    verify_rows, _ = collect_drift(ctx, conn, source, usernames=usernames)
     for row in verify_rows:
         good = row["status"] == "SAME"
         ctx.record(conn.node.name, f"verify: {row['username']}", good, row["status"])

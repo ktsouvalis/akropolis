@@ -11,6 +11,19 @@ dead ends.
 
 ## [Unreleased]
 
+## [2.2.3] - 2026-09-14
+
+### Fixed
+
+- `ldap-reconcile` couldn't tell "no LDAP source configured in Authentik at
+  all" or "`--source` named a slug nothing matches" apart from "sources
+  exist, genuinely nothing to reconcile" — all three printed the same
+  `no LDAP-linked users found — nothing to check.` and exited 0. The
+  underlying `ak shell` script now also reports which source slugs it
+  actually iterated; an unconfigured source or a typo'd `--source` now
+  refuses with a specific error and exit code 2, rather than silently
+  looking like a clean pass.
+
 ## [2.2.2] - 2026-09-14
 
 ### Fixed
