@@ -132,10 +132,11 @@ class NginxSinglePhase(Phase):
         maintenance = resources.files("akropolis.templates").joinpath("maintenance.html").read_text()
         push_file(conn, maintenance, f"{MAINT_ROOT}/maintenance.html")
 
+        cert_changed = False
         if p in ("self_signed", "acme"):
-            self._generate_self_signed(ctx, conn)
+            cert_changed = self._generate_self_signed(ctx, conn)
         elif p == "import":
-            self._import_cert(ctx, conn)
+            cert_changed = self._import_cert(ctx, conn)
 
         ctx.begin(node, "installing nginx", "no-op when present")
         r = conn.run("command -v nginx >/dev/null || "
@@ -159,7 +160,7 @@ class NginxSinglePhase(Phase):
             raise RuntimeError("nginx -t failed — see output above")
 
         running = conn.run("systemctl is-active --quiet nginx").ok
-        if not running or conf_changed:
+        if not running or conf_changed or cert_changed:
             r = conn.run("systemctl enable --now nginx && systemctl reload nginx")
             ctx.record(node, "nginx running", r.ok, r.err if not r.ok else "")
         else:
@@ -169,7 +170,10 @@ class NginxSinglePhase(Phase):
             self._finalize_acme(ctx, conn)
 
     # ------------------------------------------------------------ providers
-    def _generate_self_signed(self, ctx: PhaseContext, conn) -> None:
+    def _generate_self_signed(self, ctx: PhaseContext, conn) -> bool:
+        """Returns True iff a new cert was actually generated (so the caller
+        knows whether nginx needs to be told about it — see cert_changed in
+        apply())."""
         node = conn.node.name
         cn = self._cn(ctx)
 
@@ -182,7 +186,7 @@ class NginxSinglePhase(Phase):
         if r.ok:
             ctx.record(node, "self-signed cert", True,
                        "existing cert matches and is valid >30d — kept")
-            return
+            return False
 
         try:
             ipaddress.ip_address(cn)
@@ -202,8 +206,9 @@ class NginxSinglePhase(Phase):
                    r.err.splitlines()[-1] if (not r.ok and r.err) else "")
         if not r.ok:
             raise RuntimeError("openssl generation failed")
+        return True
 
-    def _import_cert(self, ctx: PhaseContext, conn) -> None:
+    def _import_cert(self, ctx: PhaseContext, conn) -> bool:
         from cryptography import x509
         from cryptography.hazmat.primitives import serialization
 
@@ -243,11 +248,12 @@ class NginxSinglePhase(Phase):
         if days_left <= 0:
             raise RuntimeError("certificate is already expired")
 
-        push_file(conn, chain_bytes.decode(), FULLCHAIN, mode="0644")
-        push_file(conn, key_bytes.decode(), PRIVKEY, mode="0600")
+        c1 = push_file(conn, chain_bytes.decode(), FULLCHAIN, mode="0644")
+        c2 = push_file(conn, key_bytes.decode(), PRIVKEY, mode="0600")
         ctx.record(node, "cert pushed", True, CERT_DIR)
         ctx.state.data["generated"]["tls_cert_expiry"] = expiry.date().isoformat()
         ctx.state.save()
+        return c1 or c2
 
     # ----------------------------------------------------- acme finalization
     def _finalize_acme(self, ctx: PhaseContext, conn) -> None:

@@ -11,6 +11,21 @@ dead ends.
 
 ## [Unreleased]
 
+## [2.1.1] - 2026-09-14
+
+### Fixed
+
+- `tls` phase (HA) and `nginx` phase (single) wrote a rotated certificate
+  (a regenerated self-signed cert, or a new `import`ed pair) to disk without
+  ever telling an already-running nginx to reload it. The container kept
+  serving the previous certificate from memory indefinitely — no error, no
+  warning — until nginx happened to restart for some unrelated reason.
+  Both phases now reload nginx (`nginx -s reload`) whenever the certificate
+  bytes actually changed on a node where nginx is already up; a no-op on
+  first bootstrap, where nginx starts fresh with the new files already in
+  place. ACME's own renewal path (`certbot-deploy-hook.sh.j2`) already
+  reloaded correctly on every renewal and is unaffected.
+
 ## [2.1.0] - 2026-09-14
 
 ### Added

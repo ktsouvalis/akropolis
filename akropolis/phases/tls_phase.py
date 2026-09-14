@@ -61,6 +61,9 @@ class TLSPhase(Phase):
         common = [f"distribute fullchain.pem + privkey.pem to {CERT_DIR} on "
                   f"{'all ' + str(len(cfg.nodes)) + ' nodes' if len(cfg.nodes) > 1 else 'the node'} "
                   "(privkey mode 0600)",
+                  "if nginx is already running on a node that got new cert bytes "
+                  "(a --replay, not first bootstrap): reload it there so the new "
+                  "certificate is actually served",
                   "verify on every node: key matches cert, SAN covers the hostname"]
         if p == "self_signed":
             san_desc = "hostname + node names + node IPs" + (" + VIP" if cfg.network.vip else "")
@@ -105,6 +108,26 @@ class TLSPhase(Phase):
         ctx.state.save()
 
     # ------------------------------------------------------------ providers
+    def _reload_nginx_if_running(self, ctx: PhaseContext, conns) -> None:
+        """Tell an already-running nginx on `conns` to reload, so a cert
+        rotation from this phase actually takes effect instead of sitting
+        unread on the bind-mounted volume until nginx next restarts for an
+        unrelated reason.
+
+        A no-op on first bootstrap (nginx hasn't started yet — the
+        nginx-keepalived phase that runs right after this one starts it with
+        the fresh files already in place, nothing to reload) and on a node
+        the cert content did not actually change on.
+        """
+        for conn in conns:
+            node = conn.node.name
+            if not conn.run("docker ps --filter status=running "
+                            "--format '{{.Names}}' | grep -qx nginx").ok:
+                continue
+            r = conn.run("docker exec nginx nginx -s reload")
+            ctx.record(node, "nginx reloaded with new certificate", r.ok,
+                       r.err if not r.ok else "")
+
     def _generate_self_signed(self, ctx: PhaseContext) -> None:
         cfg = ctx.cfg
         leader = next(c for c in ctx.fleet if c.node.bootstrap_leader)
@@ -115,6 +138,7 @@ class TLSPhase(Phase):
             f"openssl x509 -in {FULLCHAIN} -noout -checkend 2592000 && "
             f"openssl x509 -in {FULLCHAIN} -noout -ext subjectAltName "
             f"| grep -q {shlex.quote(cfg.tls.hostname)}")
+        leader_changed = not r.ok
         if r.ok:
             ctx.record(leader.node.name, "self-signed cert", True,
                        "existing cert matches hostname and is valid >30d — kept")
@@ -135,15 +159,20 @@ class TLSPhase(Phase):
             if not r.ok:
                 raise RuntimeError("openssl generation failed on the leader")
 
-        # distribute leader's pair to the other nodes
+        # distribute leader's pair to the other nodes; track which nodes
+        # actually got new bytes so only those get told to reload nginx
         chain = leader.run(f"cat {FULLCHAIN}").out + "\n"
         key = leader.run(f"cat {PRIVKEY}").out + "\n"
+        changed_conns = [leader] if leader_changed else []
         for conn in ctx.fleet:
             if conn.node.bootstrap_leader:
                 continue
-            push_file(conn, chain, FULLCHAIN, mode="0644")
-            push_file(conn, key, PRIVKEY, mode="0600")
+            c1 = push_file(conn, chain, FULLCHAIN, mode="0644")
+            c2 = push_file(conn, key, PRIVKEY, mode="0600")
+            if c1 or c2:
+                changed_conns.append(conn)
             ctx.record(conn.node.name, "cert distributed", True, "")
+        self._reload_nginx_if_running(ctx, changed_conns)
 
     def _stage_acme(self, ctx: PhaseContext) -> None:
         cfg = ctx.cfg
@@ -201,10 +230,14 @@ class TLSPhase(Phase):
         if days_left <= 0:
             raise RuntimeError("certificate is already expired")
 
+        changed_conns = []
         for conn in ctx.fleet:
-            push_file(conn, chain_bytes.decode(), FULLCHAIN, mode="0644")
-            push_file(conn, key_bytes.decode(), PRIVKEY, mode="0600")
+            c1 = push_file(conn, chain_bytes.decode(), FULLCHAIN, mode="0644")
+            c2 = push_file(conn, key_bytes.decode(), PRIVKEY, mode="0600")
+            if c1 or c2:
+                changed_conns.append(conn)
             ctx.record(conn.node.name, "cert distributed", True, "")
+        self._reload_nginx_if_running(ctx, changed_conns)
 
         ctx.state.data["generated"]["tls_cert_expiry"] = expiry.date().isoformat()
         ctx.state.save()
