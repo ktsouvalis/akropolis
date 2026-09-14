@@ -172,6 +172,12 @@ akropolis clean CONFIG              tear the site down to bare VMs (reverse buil
   --i-know-this-is-production          required additionally when site.environment
                                         is production
 
+akropolis ldap-reconcile CONFIG     repoint Authentik LDAP source identifiers that
+                                       have drifted out-of-band (same username, new
+                                       entryUUID) — see LDAP identifier reconciliation
+  --source SLUG                        only reconcile this LDAP source slug
+                                        (default: every configured LDAP source)
+
 akropolis monitor CONFIG            real-time cluster health dashboard (ha topology only)
 
 akropolis logs CONFIG               cluster-wide log viewer over SSH (ha topology only)
@@ -573,6 +579,53 @@ The plan printed before the confirmation prompt calls out the version change (`a
 
 - **No backup.** Authentik runs its DB migrations on container start with no rollback. Take one first — `restore.sql_file` on a fresh site restores a dump, but there's no equivalent "dump this cluster before upgrading" step; use `pg_dump` (`ha`: against the Patroni leader; `single`: against the `postgresql` container) by hand.
 - **No version-skip check.** Authentik's own release notes sometimes require going through an intermediate version rather than jumping straight to the target. akropolis renders whatever tag you give it — check upstream's upgrade path yourself.
+
+## LDAP identifier reconciliation
+
+Authentik's LDAP source sync keys every user off a per-source **object
+uniqueness field** (`Directory > Federation and Social login > Sources`,
+typically `entryUUID`), stored on the connection between that user and the
+source. If something outside Authentik reissues that value for an existing
+account — same username, new `entryUUID` — while the username itself stays
+put, Authentik's own unique-username constraint blocks it from re-linking
+automatically: the sync for that entry errors or skips every cycle, and the
+account's group memberships/attributes silently freeze at whatever they were
+before the change until someone notices missing access.
+
+```bash
+akropolis ldap-reconcile config.<site>.yml
+akropolis ldap-reconcile config.<site>.yml --source my-ldap-source
+```
+
+This reads every configured LDAP source's own `object_uniqueness_field` and
+`base_dn` rather than assuming `entryUUID` / a hardcoded DN, does one live
+LDAP search per source, and compares it against **every** currently-linked
+user for that source — not just ones already noticed in logs. Matches are
+printed as a table (`SAME` / `DIFFERENT` / `NOT_FOUND_IN_LDAP`), and each
+`DIFFERENT` user is confirmed individually (`y/N`) before anything is
+written; declining leaves that user untouched. The only write it ever makes
+is repointing the existing link's stored identifier to the live one —
+compare-and-swap against the value last read, so a real sync or a
+concurrent fix landing in between is skipped rather than clobbered — never a
+merge or a new user, so group memberships, application grants and audit
+history stay exactly where they are.
+
+It runs inside the `worker` container over SSH (`ak shell`, the same route
+`authentik` phase's bootstrap-token re-mint already uses), which is why this
+takes `config.<site>.yml` — SSH access to a node — and not the monitor
+config. It never binds to LDAP from the workstation and never asks for an
+LDAP password: `source.connection()` inside Authentik reuses the bind
+credentials Authentik already has stored for that source, so there is
+nothing new to prompt for.
+
+Two things worth knowing if your directory differs from this: usernames are
+correlated via the LDAP `uid` attribute (Authentik's default LDAP username
+mapping), and the uniqueness attribute is read as a plain string — a source
+whose `object_uniqueness_field` is byte-valued (e.g. Active Directory's
+`ms-DS-ConsistencyGuid`) isn't handled specially here. Also out of scope
+entirely: a user who no longer exists in LDAP at all (deprovisioning is a
+separate decision), and reconciling anything other than the identifier
+itself.
 
 ## Monitoring
 

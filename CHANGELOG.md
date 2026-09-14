@@ -11,6 +11,40 @@ dead ends.
 
 ## [Unreleased]
 
+## [2.2.0] - 2026-09-14
+
+### Added
+
+- `akropolis ldap-reconcile CONFIG [--source SLUG]`: a new operational
+  command (SSH-driven, alongside `shutdown`/`start`/`clean`, not a
+  provisioning phase) for a failure mode Authentik doesn't recover from on
+  its own. Its LDAP source sync keys every user off a per-source object
+  uniqueness field (`Directory > Federation and Social login > Sources`,
+  typically `entryUUID`). If something outside Authentik reissues that value
+  for an existing account — same username, new `entryUUID` — while the
+  username stays put, Authentik's own unique-username constraint blocks it
+  from re-linking automatically: the sync for that entry errors or skips
+  every cycle, and the account's group memberships/attributes silently
+  freeze at their pre-change state until someone notices missing access.
+  `ldap-reconcile` reads every configured LDAP source's own
+  `object_uniqueness_field`/`base_dn` (not a hardcoded attribute or DN), does
+  one live LDAP search per source, and compares it against every
+  currently-linked user for that source — not just ones already noticed in
+  logs — printing only the ones that don't match (`DIFFERENT` /
+  `NOT_FOUND_IN_LDAP`; a one-line count covers the rest). Each `DIFFERENT`
+  user is confirmed individually before anything is written, and the only
+  write it ever makes is a compare-and-swap repoint of that one stored
+  identifier — never a merge or a new user, so group memberships,
+  application grants and audit history stay exactly where they are. It runs
+  over `ak shell` inside the `worker` container (the same route the
+  `authentik` phase's bootstrap-token re-mint already uses) and never binds
+  to LDAP from the workstation or prompts for an LDAP password:
+  `source.connection()` inside Authentik reuses the bind credentials
+  Authentik already has stored for that source. See "LDAP identifier
+  reconciliation" in the README for the full behavior and known limitations
+  (`uid`-based username correlation, string-valued uniqueness attributes
+  only).
+
 ## [2.1.1] - 2026-09-14
 
 ### Fixed

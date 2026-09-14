@@ -6,6 +6,7 @@
     akropolis shutdown  config.yml      # gracefully stop the authentik backend(s)
     akropolis start      config.yml     # bring them back — requires a prior shutdown
     akropolis clean     config.yml      # tear the site down to bare VMs
+    akropolis ldap-reconcile config.yml # repoint drifted LDAP source identifiers
     akropolis monitor   config.yml      # real-time cluster health dashboard
     akropolis logs      config.yml      # cluster-wide log viewer (SSH), --save to download
     akropolis update                    # install the latest release (zipapp binary only)
@@ -42,6 +43,7 @@ from .phases.clean_phase import CleanPhase
 from .phases.etcd_phase import EtcdPhase
 from .phases.handoff_phase import HandoffPhase
 from .phases.haproxy_phase import HAProxyPhase
+from .phases import ldap_reconcile
 from .phases.nginx_keepalived_phase import NginxKeepalivedPhase
 from .phases.nginx_single_phase import NginxSinglePhase
 from .phases.tls_phase import TLSPhase
@@ -308,6 +310,48 @@ def cmd_clean(args: argparse.Namespace) -> int:
     return 0 if ok else 1
 
 
+def cmd_ldap_reconcile(args: argparse.Namespace) -> int:
+    try:
+        cfg = load(args.config)
+    except ConfigError as exc:
+        console.print("[red]config problems:[/red]")
+        for p in exc.problems:
+            console.print(f"  ✘ {p}")
+        return 2
+
+    state = State(cfg.state_file, cfg.name)
+    transcript = Transcript(_transcript_path(cfg, "ldap-reconcile"))
+    console.print(f"[dim]transcript: {transcript.path} "
+                  "(every command run on every node this session — mode 0600)[/dim]")
+
+    password = None
+    if cfg.ssh.auth == "password":
+        password = getpass.getpass(f"SSH password for {cfg.ssh.user}: ")
+    sudo_password = None
+    if cfg.ssh.become:
+        hint = ("Enter = reuse SSH password" if password
+                else "Enter = try passwordless sudo")
+        sudo_password = getpass.getpass(
+            f"sudo password for {cfg.ssh.user} ({hint}): ") or password
+
+    fleet = Fleet(cfg.nodes, cfg.ssh, password, sudo_password, transcript=transcript)
+    if not _preauth_sudo(cfg, fleet, password):
+        fleet.close()
+        transcript.close()
+        return 2
+    fleet.current_phase = "ldap-reconcile"
+    transcript.note("phase: ldap-reconcile")
+    ctx = PhaseContext(cfg=cfg, state=state, fleet=fleet)
+
+    try:
+        rc = ldap_reconcile.run(ctx, source=args.source)
+    finally:
+        ctx.end_status()
+        fleet.close()
+        transcript.close()
+    return rc
+
+
 def cmd_monitor(args: argparse.Namespace) -> int:
     # Imported here, not at module level: textual/requests/urllib3/psycopg2
     # are only needed by this subcommand, and `--help`/every other command
@@ -391,6 +435,15 @@ def main(argv: list[str] | None = None) -> int:
     p_clean.add_argument("--i-know-this-is-production", action="store_true",
                          help="required additionally when site.environment is production")
     p_clean.set_defaults(func=cmd_clean)
+
+    p_ldap = sub.add_parser("ldap-reconcile", help="repoint Authentik LDAP source "
+                            "identifiers after an out-of-band entryUUID change "
+                            "(same user account, never touches LDAP itself)")
+    p_ldap.add_argument("config", help="path to config.<site>.yml")
+    p_ldap.add_argument("--source", metavar="SLUG",
+                        help="only reconcile this LDAP source slug (default: "
+                        "every configured LDAP source)")
+    p_ldap.set_defaults(func=cmd_ldap_reconcile)
 
     p_mon = sub.add_parser("monitor", help="real-time TUI dashboard for the full "
                            "Authentik HA stack (ha topology only)")
