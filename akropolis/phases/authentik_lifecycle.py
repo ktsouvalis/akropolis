@@ -138,12 +138,25 @@ class AuthentikStartPhase(Phase):
     def _gate(self, ctx: PhaseContext) -> str:
         return ctx.state.phase_status("authentik-shutdown")
 
+    def _gate_detail(self, ctx: PhaseContext) -> str:
+        """When the gate is refusing, say *when* it last flipped and why — a bare
+        `started` reads as "shutdown never ran", but it equally means "a `start`
+        already consumed the last shutdown and none has run since" (`start`
+        clears the flag on success — see module docstring). Without a
+        timestamp there is no way to tell those apart from the refusal alone,
+        and the operator is left guessing at their own command history.
+        """
+        entry = ctx.state.data["phases"].get("authentik-shutdown", {})
+        when = entry.get("updated_at", "")
+        note = entry.get("note", "")
+        return f", last changed {when}" + (f" ({note})" if note else "") if when else ""
+
     def plan(self, ctx: PhaseContext) -> list[str]:
         status = self._gate(ctx)
         if status != "done":
             return [f"[red]refusing[/red]: no completed graceful shutdown on record "
-                    f"(authentik-shutdown: {status}) — run `akropolis shutdown "
-                    "<config>` first; apply will refuse"]
+                    f"(authentik-shutdown: {status}{self._gate_detail(ctx)}) — run "
+                    "`akropolis shutdown <config>` first; apply will refuse"]
         ha = ctx.cfg.topology == "ha"
         n = len(ctx.fleet.conns)
         if ha:
@@ -165,7 +178,7 @@ class AuthentikStartPhase(Phase):
         if status != "done":
             raise RuntimeError(
                 f"no completed graceful shutdown on record (authentik-shutdown: "
-                f"{status}) — run `akropolis shutdown <config>` first")
+                f"{status}{self._gate_detail(ctx)}) — run `akropolis shutdown <config>` first")
 
         scope = _scope(ctx)
         for conn in ctx.fleet:

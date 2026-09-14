@@ -274,6 +274,8 @@ postgres:
 base:
   apt_upgrade: false        # baseline packages are installed either way;
                             # full dist upgrades stay under the operator's patching policy
+  unattended_upgrades: false # akropolis masks the OS's own unattended-upgrades
+                            # service by default; set true to leave it alone
 ```
 
 Config is validated in one pass at load: placeholder IPs, VIP/node subnet mismatches, missing key files, and provider-specific requirements are all reported together before anything connects anywhere.
@@ -294,9 +296,9 @@ Guide Step 1. Hostname per node, an akropolis-marker-managed block in `/etc/host
 
 The monitoring host gets its own UFW opening: `monitor.ip` in the site config (or an interactive question, answer pinned in state, Enter to skip) is allowed to `2379,5000,5001,8008,8080,9000,9443/tcp` on every node. ak-monitor is not one of the nodes, so without this rule default-deny silently blanks every dashboard column that isn't plain HTTPS; the polls just time out.
 
-`apt upgrade` is deliberately **not** run unless `base.apt_upgrade: true`: package drift belongs to your patching policy, not the provisioner.
+`apt upgrade` is deliberately **not** run unless `base.apt_upgrade: true`: package drift belongs to your patching policy, not the provisioner. For the same reason, the OS's own `unattended-upgrades` service and `apt-daily-upgrade.timer` are masked by default — a package changing under a running Patroni on the OS's own schedule is the same risk, just silent; set `base.unattended_upgrades: true` to leave the OS default alone.
 
-Verify: `docker compose` available, UFW active, chrony running, hostname applied, on every node.
+Verify: `docker compose` available, UFW active, chrony running, hostname applied, unattended-upgrades masked (unless `base.unattended_upgrades: true`), on every node.
 
 ### etcd
 
@@ -406,9 +408,9 @@ The migration/cutover move, wired in as a phase between `authentik` and `handoff
 
 When enabled it is destructive by definition, so the order is strict and every step gated: locate the **current** Patroni leader via REST `/primary` (it may not be node-1 by now); check the dump's `SET <guc>` header against the target server's `pg_settings` **before anything destructive**: a dump written by a newer `pg_dump` carries GUCs an older server rejects (`pg_dump` 17 into PostgreSQL 16 emits `SET transaction_timeout = 0;`), and discovering that after the DROP would leave the cluster down on an empty database; those specific header lines are stripped at load time and nothing else is filtered, so `ON_ERROR_STOP` still governs the real content; stop authentik on **all** nodes before touching the database; SFTP the dump to the leader (the base64 push is unusable at dump sizes) and verify sha256 end-to-end; `DROP DATABASE ... WITH (FORCE)` → `CREATE ... OWNER authentik` → `psql -v ON_ERROR_STOP=1`; any error stops the phase with authentik deliberately still down, never half-up on half-data; delete the dump from the node (it contains every secret the IdP holds); then bring authentik back: the **worker starts alone** (`up -d --no-deps worker`) and is gated on `restore.migration_timeout` (default 3600s). This matters: a restored database is not a fresh one, and the worker migrating real data outlasts compose's own dependency wait (`start_period` 60s + `interval` 30s × `retries` 3 ≈ 150s), after which `docker compose up -d` aborts the whole thing with *dependency failed to start* while the migration is running perfectly well. The server follows once the worker is healthy, then the other nodes one at a time; their workers find a migrated schema and come up normally. Whenever a health gate expires, the tail of the relevant container log is printed automatically rather than telling you to go and fetch it. Verify proves the restored schema has tables, `authentik_core_user` is populated, and every node is healthy and ready. The dump's sha256 and timestamp land in state as the paper trail; at real cutover, re-run with the fresh dump via `--replay restore`.
 
-### handoff
+### handoff *(read-only)*
 
-The last phase, and the only one that touches nothing on the nodes. It writes the monitoring tool's `config.yml` **on the workstation** (path from `monitor.output`, default `./config.<site>.monitor.yml`, mode 0600), filled entirely from the site config and pinned state: the per-service node groups, ports, SSH log-collection settings, the HAProxy stats and postgres credentials, the Authentik API token that the authentik phase already proved against the live API, and the keepalived `track_weight` (−25) and per-node `base_priority` values exactly as deployed; the monitor computes effective VRRP priorities from these, so config and reality match by construction rather than by discipline. When the tls provider is `import`, the certificate expiry is noted in the emitted file, since no renewal timer exists.
+The last phase, and the only one that touches nothing on the nodes — like `preflight`, it runs without the typed-site-name/y-N confirmation the other phases require, since there is nothing irreversible to approve. It writes the monitoring tool's `config.yml` **on the workstation** (path from `monitor.output`, default `./config.<site>.monitor.yml`, mode 0600), filled entirely from the site config and pinned state: the per-service node groups, ports, SSH log-collection settings, the HAProxy stats and postgres credentials, the Authentik API token that the authentik phase already proved against the live API, and the keepalived `track_weight` (−25) and per-node `base_priority` values exactly as deployed; the monitor computes effective VRRP priorities from these, so config and reality match by construction rather than by discipline. When the tls provider is `import`, the certificate expiry is noted in the emitted file, since no renewal timer exists.
 
 It then prints the landing card: admin URL, the `akadmin` username, and the bootstrap password, shown **once**, in your terminal, because you need it to log in; change it after first login. Pending-ACME and staging-cert conditions are called out on the card if applicable.
 

@@ -26,6 +26,10 @@ from .base import Phase, PhaseContext, console
 
 class HandoffPhase(Phase):
     name = "handoff"
+    # Nothing on any node is touched (see module docstring) — a typed-site-name
+    # confirmation here would gate a local file write and a printout, not an
+    # irreversible action, so it's skipped like preflight's is.
+    read_only = True
 
     def _out_path(self, ctx: PhaseContext) -> Path:
         mon = ctx.cfg.raw.get("monitor") or {}

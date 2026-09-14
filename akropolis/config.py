@@ -29,7 +29,13 @@ VALID_TOPOLOGIES = {"ha", "single"}
 #   1 : baseline -- introduces config_version tracking itself. Every
 #       config predating this must add `site.config_version: 1` after
 #       confirming it matches the schema described in config.example.yml.
-CONFIG_SCHEMA_VERSION = 1
+#   2 : `base` phase now masks the OS's unattended-upgrades service by
+#       default (new key `base.unattended_upgrades`, default false). A
+#       config predating this bump that relied on the OS's default
+#       auto-update behavior will have it turned off on the next `base`
+#       apply (fresh provision or `--replay base`) unless
+#       `base.unattended_upgrades: true` is added first -- see CHANGELOG.md.
+CONFIG_SCHEMA_VERSION = 2
 
 # Default Authentik image tag per topology. Kept separate deliberately: the
 # 3-node HA cluster stays pinned to 2026.5.6 (2026.8.0 hit an embedded-outpost

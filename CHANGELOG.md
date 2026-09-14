@@ -11,6 +11,50 @@ dead ends.
 
 ## [Unreleased]
 
+## [2.1.0] - 2026-09-14
+
+### Added
+
+- `base` phase now masks the OS's own `unattended-upgrades` service and
+  `apt-daily-upgrade.timer` by default — the same package-drift-under-a-
+  running-Patroni risk `base.apt_upgrade` already guarded against, except on
+  the OS's own schedule instead of the provisioner's, and silent. Set
+  `base.unattended_upgrades: true` to leave the OS default (enabled) alone.
+- `akropolis init` now writes a commented `base:` block (`apt_upgrade`,
+  `unattended_upgrades`) into the generated config, matching how `restore` is
+  already signposted. Previously these keys existed only in `config.example.yml`
+  and the README — a wizard-generated config had no `base:` section at all,
+  so operators who only ever look at their own file had no way to discover
+  them.
+
+### Changed
+
+- `handoff` (both topologies) is now marked read-only like `preflight`, so it
+  runs straight through without the typed-site-name/y-N confirmation prompt.
+  It was already documented as "the only phase that touches nothing on the
+  nodes" but still gated behind the same confirmation as destructive phases —
+  the prompt was approving a local file write and a printout, nothing on any
+  node.
+- `akropolis start`'s refusal message ("no completed graceful shutdown on
+  record") now includes when the `authentik-shutdown` flag last changed and,
+  if present, the note recorded then. The flag tracks *whether a graceful
+  `akropolis shutdown` ran more recently than the last `akropolis start`*,
+  not whether the containers are currently up or down — a successful `start`
+  clears it, so a bare `authentik-shutdown: started` in the refusal reads the
+  same whether no shutdown ever ran or one simply hasn't run since the last
+  `start`. The timestamp lets the operator tell those apart against their own
+  command history instead of guessing.
+
+### Migration note
+
+`site.config_version` bumped 1 → 2: an existing config that predates this
+release relied on the OS's default unattended-upgrades behavior, which the
+`base` phase now turns off on its next apply (fresh provision or `--replay
+base`). Add `base.unattended_upgrades: true` to the site's config first if
+you want to keep the OS default, then bump `config_version` to 2 — akropolis
+refuses to run against a stale `config_version` rather than apply this
+silently.
+
 ## [2.0.1] - 2026-09-11
 
 ### Fixed

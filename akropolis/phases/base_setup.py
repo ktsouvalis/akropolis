@@ -5,6 +5,12 @@ are no-ops when satisfied, UFW rules can be re-added freely. `apt upgrade` is
 deliberately NOT run here (slow, and package drift belongs to the operator's
 patching policy, not the provisioner); it can be enabled via raw config
 `base.apt_upgrade: true`.
+
+For the same reason, Ubuntu's own `unattended-upgrades` (apt-daily-upgrade.timer)
+is masked by default here too: it is the same package-drift-under-a-running-
+Patroni risk `apt_upgrade` avoids, except silent and on the OS's own schedule
+instead of the provisioner's. Set `base.unattended_upgrades: true` to leave the
+OS default (enabled) alone.
 """
 
 from __future__ import annotations
@@ -73,6 +79,7 @@ class BasePhase(Phase):
     def plan(self, ctx: PhaseContext) -> list[str]:
         cfg = ctx.cfg
         upgrade = bool((cfg.raw.get("base") or {}).get("apt_upgrade", False))
+        disable_uu = not bool((cfg.raw.get("base") or {}).get("unattended_upgrades", False))
         # plan must not prompt: show the config value or announce the question
         mon_ip = (str(((cfg.raw.get("monitor") or {}).get("ip") or "")).strip()
                  or ctx.state.data["generated"].get("monitor_ip", ""))
@@ -98,6 +105,10 @@ class BasePhase(Phase):
         lines += [
             f"apt update{' && apt upgrade' if upgrade else ''} && install baseline packages"
             + (" + chrony" if cfg.topology == "ha" else ""),
+            "mask unattended-upgrades + apt-daily-upgrade.timer (OS auto-updates can "
+            "replace packages under a running cluster on their own schedule; set "
+            "base.unattended_upgrades: true to leave them alone)" if disable_uu else
+            "leave OS unattended-upgrades as configured (base.unattended_upgrades: true)",
             "install Docker CE from download.docker.com (keyring + repo + packages)",
             ufw_base,
         ]
@@ -109,6 +120,7 @@ class BasePhase(Phase):
     def apply(self, ctx: PhaseContext) -> None:
         cfg = ctx.cfg
         upgrade = bool((cfg.raw.get("base") or {}).get("apt_upgrade", False))
+        disable_uu = not bool((cfg.raw.get("base") or {}).get("unattended_upgrades", False))
         mon_ip = self._monitor_ip(ctx)  # may prompt — before any node is touched
 
         hosts_block = "\n".join(f"{n.ip}  {n.name}" for n in cfg.nodes)
@@ -144,6 +156,18 @@ class BasePhase(Phase):
             ctx.record(node, "baseline packages", r.ok,
                        r.err.splitlines()[-1] if (not r.ok and r.err) else "")
             conn.run("systemctl enable --now chrony")
+
+            # Masking (not just disabling) stops `systemctl start` — including
+            # a package upgrade's postinst re-enabling the timer — from ever
+            # bringing it back without an explicit unmask. Both the service
+            # and its timer trigger are covered; -daily.timer (list refresh
+            # only, no upgrade) is left alone.
+            if disable_uu:
+                r = conn.run("systemctl disable --now unattended-upgrades.service "
+                             "apt-daily-upgrade.timer 2>/dev/null; "
+                             "systemctl mask unattended-upgrades.service "
+                             "apt-daily-upgrade.timer")
+                ctx.record(node, "unattended-upgrades masked", r.ok, r.err if not r.ok else "")
 
             # Docker (guide 1.3) — skipped when already present
             if conn.run("command -v docker && docker compose version").ok:
@@ -192,6 +216,7 @@ systemctl enable --now docker
 
     def verify(self, ctx: PhaseContext) -> bool:
         ok = True
+        disable_uu = not bool((ctx.cfg.raw.get("base") or {}).get("unattended_upgrades", False))
         mon_ip = str(((ctx.cfg.raw.get("monitor") or {}).get("ip") or "")).strip() \
             or ctx.state.data["generated"].get("monitor_ip", "")
         for conn in ctx.fleet:
@@ -203,6 +228,9 @@ systemctl enable --now docker
                      f"ufw status | grep -qF {mon_ip}")] if mon_ip else []),
                 ("chrony running", "systemctl is-active chrony >/dev/null"),
                 ("hostname applied", f"test \"$(hostname)\" = {conn.node.name}"),
+                *([("unattended-upgrades masked",
+                    "systemctl is-enabled unattended-upgrades.service 2>&1 | "
+                    "grep -q masked")] if disable_uu else []),
             ]
             for label, cmd in checks:
                 r = conn.run(cmd)

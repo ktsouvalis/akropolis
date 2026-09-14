@@ -241,6 +241,15 @@ def run_wizard(output: str | None = None) -> Path:
             "# single has no multi-node outpost topology to trigger it, so it runs\n"
             "# current. See NOTES.md.\n"
         )
+        f.write(
+            "\n"
+            "# Optional — base OS setup tuning (see README: base OS setup).\n"
+            "# base:\n"
+            "#   apt_upgrade: false          # run `apt upgrade` during base setup\n"
+            "#   unattended_upgrades: false  # akropolis masks the OS's own\n"
+            "#                               # unattended-upgrades service by default;\n"
+            "#                               # set true to leave it alone\n"
+        )
         if topology == "ha":
             f.write(
                 "\n"

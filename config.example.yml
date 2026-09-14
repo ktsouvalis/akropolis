@@ -13,7 +13,7 @@ site:
   environment: lab                # lab | production
                                   #   production: every apply phase requires typing the
                                   #   site name to confirm; --force is ignored.
-  config_version: 1               # pins this file to the config shape akropolis expects.
+  config_version: 2               # pins this file to the config shape akropolis expects.
                                   #   `provision`/`shutdown`/`start`/`clean` refuse to run
                                   #   on a mismatch rather than guess at a renamed/removed
                                   #   key -- see CHANGELOG.md and CONFIG_SCHEMA_VERSION in
@@ -57,6 +57,12 @@ base:
                                   # patching policy, not the provisioner, and an
                                   # unattended upgrade mid-provision can replace
                                   # libraries under a running Patroni (see NOTES.md).
+  unattended_upgrades: false      # akropolis masks the OS's own unattended-upgrades
+                                  # service + apt-daily-upgrade.timer by default —
+                                  # same reasoning as apt_upgrade above, but for
+                                  # updates the OS applies on its own schedule
+                                  # instead of the provisioner's. Set true to leave
+                                  # the OS default (enabled) alone.
 
 # ---------------------------------------------------------------------------
 # Nodes: exactly 3 for topology: ha, exactly 1 for topology: single
