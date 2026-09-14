@@ -11,6 +11,19 @@ dead ends.
 
 ## [Unreleased]
 
+## [2.2.1] - 2026-09-14
+
+### Changed
+
+- `ldap-reconcile`'s output now shows only the rows that need a look
+  (`DIFFERENT` / `NOT_FOUND_IN_LDAP`; matching `SAME` users collapse into a
+  one-line count), and each of those rows carries the Authentik `User.path`
+  and whether the account is currently active. A `NOT_FOUND_IN_LDAP` row for
+  an account kept under a custom/internal path (not
+  `goauthentik.io/sources/<slug>/People`), or one that's already deactivated,
+  is expected rather than a sign of a real LDAP removal — this makes that
+  distinguishable from the table without having to go check by hand.
+
 ## [2.2.0] - 2026-09-14
 
 ### Added

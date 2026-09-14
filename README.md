@@ -600,11 +600,18 @@ akropolis ldap-reconcile config.<site>.yml --source my-ldap-source
 This reads every configured LDAP source's own `object_uniqueness_field` and
 `base_dn` rather than assuming `entryUUID` / a hardcoded DN, does one live
 LDAP search per source, and compares it against **every** currently-linked
-user for that source — not just ones already noticed in logs. Matches are
-printed as a table (`SAME` / `DIFFERENT` / `NOT_FOUND_IN_LDAP`), and each
-`DIFFERENT` user is confirmed individually (`y/N`) before anything is
-written; declining leaves that user untouched. The only write it ever makes
-is repointing the existing link's stored identifier to the live one —
+user for that source — not just ones already noticed in logs. `SAME` rows
+are collapsed into a one-line count; only `DIFFERENT` and `NOT_FOUND_IN_LDAP`
+rows are printed, each alongside the Authentik `User.path` and whether the
+account is currently active. An account genuinely synced from LDAP carries a
+path like `goauthentik.io/sources/<slug>/People`, so a `NOT_FOUND_IN_LDAP`
+row under a different (e.g. internal/manually-managed) path is expected and
+not a real LDAP removal, and one already deactivated is presumably already
+handled; a row on the LDAP source's own path that's still active is worth
+investigating. Each `DIFFERENT` user is confirmed individually (`y/N`)
+before anything is written; declining leaves that user untouched. The only
+write it ever makes is repointing the existing link's stored identifier to
+the live one —
 compare-and-swap against the value last read, so a real sync or a
 concurrent fix landing in between is skipped rather than clobbered — never a
 merge or a new user, so group memberships, application grants and audit

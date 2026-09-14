@@ -98,7 +98,8 @@ def _dry_run_script(source_slug: str | None, usernames: list[str] | None = None)
         "            status = 'SAME'\n"
         "        else:\n"
         "            status = 'DIFFERENT'\n"
-        "        rows.append({'source': source.slug, 'username': uname, 'stored': stored,\n"
+        "        rows.append({'source': source.slug, 'username': uname, 'path': lsc.user.path,\n"
+        "                     'active': lsc.user.is_active, 'stored': stored,\n"
         "                     'live': live_val, 'status': status})\n"
         f"print({_MARKER!r} + json.dumps({{'rows': rows, 'errors': errors}}))\n"
     )
@@ -172,13 +173,15 @@ _STATUS_STYLE = {"SAME": "dim", "DIFFERENT": "yellow", "NOT_FOUND_IN_LDAP": "red
 
 def _print_table(rows: list[dict]) -> None:
     table = Table(title="LDAP identifier check")
-    for col in ("source", "username", "stored", "live", "status"):
+    for col in ("source", "username", "path", "active", "stored", "live", "status"):
         table.add_column(col)
     for row in rows:
         style = _STATUS_STYLE.get(row["status"])
         status = f"[{style}]{row['status']}[/{style}]" if style else row["status"]
-        table.add_row(row["source"], row["username"], row["stored"] or "",
-                     row["live"] or "", status)
+        active = row.get("active")
+        active_str = ("yes" if active else "[red]no[/red]") if active is not None else ""
+        table.add_row(row["source"], row["username"], row.get("path") or "", active_str,
+                     row["stored"] or "", row["live"] or "", status)
     console.print(table)
 
 
@@ -213,6 +216,8 @@ def run(ctx: PhaseContext, source: str | None = None) -> int:
     confirmed = []
     for row in drifted:
         console.print(f"\n[bold]{row['username']}[/bold] (source: {row['source']})")
+        console.print(f"  path:   {row.get('path') or ''}")
+        console.print(f"  active: {'yes' if row.get('active') else 'no'}")
         console.print(f"  stored: {row['stored']}")
         console.print(f"  live:   {row['live']}")
         answer = input("  repoint this user's identifier? [y/N] ").strip().lower()
