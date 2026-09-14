@@ -11,6 +11,16 @@ dead ends.
 
 ## [Unreleased]
 
+## [2.2.2] - 2026-09-14
+
+### Fixed
+
+- `akropolis ldap-reconcile --help` named `entryUUID` specifically, reading
+  as if the command only handled that one attribute. It reads every source's
+  own `object_uniqueness_field` (and covers every configured LDAP source,
+  not just one) — the help text now says so instead of naming one example
+  attribute as if it were the only one supported.
+
 ## [2.2.1] - 2026-09-14
 
 ### Changed

@@ -437,8 +437,10 @@ def main(argv: list[str] | None = None) -> int:
     p_clean.set_defaults(func=cmd_clean)
 
     p_ldap = sub.add_parser("ldap-reconcile", help="repoint Authentik LDAP source "
-                            "identifiers after an out-of-band entryUUID change "
-                            "(same user account, never touches LDAP itself)")
+                            "identifiers after an out-of-band change to a source's "
+                            "own object uniqueness field, e.g. entryUUID (same user "
+                            "account, every configured source, never touches LDAP "
+                            "itself)")
     p_ldap.add_argument("config", help="path to config.<site>.yml")
     p_ldap.add_argument("--source", metavar="SLUG",
                         help="only reconcile this LDAP source slug (default: "
