@@ -21,6 +21,9 @@ dependencies = [
     "psycopg2-binary>=2.9",
 ]
 
+[project.optional-dependencies]
+test = ["pytest>=8.0"]
+
 [project.scripts]
 akropolis = "akropolis.cli:main"
 
@@ -29,3 +32,6 @@ include = ["akropolis*"]
 
 [tool.setuptools.package-data]
 akropolis = ["templates/*", "CHANGELOG.md"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
