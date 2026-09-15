@@ -31,8 +31,9 @@ import ipaddress
 import secrets as pysecrets
 import shlex
 from importlib import resources
+from pathlib import Path
 
-from ..remote import push_file, render, wait_for
+from ..remote import push_binary, push_file, render, wait_for
 from .base import Phase, PhaseContext
 
 
@@ -73,6 +74,16 @@ class NginxKeepalivedPhase(Phase):
         return (ctx.cfg.tls.provider == "acme"
                 and ctx.state.data["generated"].get("tls_acme_pending", False))
 
+    # authentik.branding.logo is the same file authentik_phase mounts into
+    # Authentik's own web UI; reused here (as a separate upload — this
+    # phase's webroot is unrelated to Authentik's bind-mount) so the
+    # maintenance page stays on-brand during an outage instead of going
+    # blank. None if branding isn't configured.
+    def _branding_logo(self, ctx: PhaseContext) -> Path | None:
+        src = str((((ctx.cfg.raw.get("authentik") or {}).get("branding") or {})
+                   .get("logo") or "")).strip()
+        return Path(src).expanduser() if src else None
+
     # ------------------------------------------------------------------ plan
     def plan(self, ctx: PhaseContext) -> list[str]:
         cfg = ctx.cfg
@@ -88,6 +99,10 @@ class NginxKeepalivedPhase(Phase):
                if self._tls_enabled(ctx) else
                "plain HTTP :80 proxy (provider 'none' — testing only)")
             + ", stub_status on :8080 for the monitor",
+        ]
+        if self._branding_logo(ctx):
+            lines.append("reuse authentik.branding.logo on the maintenance page too")
+        lines += [
             "start nginx on all nodes (down && up on conf change — inode trap), "
             "verify each node individually BEFORE keepalived",
             "install keepalived + netcat; render keepalived.conf: track chk_nginx "
@@ -118,8 +133,10 @@ class NginxKeepalivedPhase(Phase):
         cfg = ctx.cfg
         compose = resources.files("akropolis.templates") \
             .joinpath("nginx-compose.yml").read_text()
-        maintenance = resources.files("akropolis.templates") \
-            .joinpath("maintenance.html").read_text()
+
+        logo = self._branding_logo(ctx)
+        logo_name = f"maintenance-logo{logo.suffix.lower()}" if logo else None
+        maintenance = render("maintenance.html.j2", logo_name=logo_name)
 
         # --- nginx on all nodes -------------------------------------------
         for conn in ctx.fleet:
@@ -133,6 +150,8 @@ class NginxKeepalivedPhase(Phase):
             # configured), so a content-only push takes effect immediately
             # without cycling the container.
             push_file(conn, maintenance, "/opt/nginx/html/maintenance.html")
+            if logo:
+                push_binary(conn, logo, f"/opt/nginx/html/{logo_name}")
 
             conf = render("nginx.conf.j2",
                           node=conn.node, nodes=cfg.nodes,

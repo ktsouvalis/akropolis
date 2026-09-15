@@ -74,4 +74,10 @@ server {
     location = /maintenance.html {
         root /var/www/akropolis-maintenance;
     }
+
+    # Branding logo (reused from authentik.branding.logo), shown on the
+    # maintenance page above — absent unless that setting is configured.
+    location ~ ^/maintenance-logo\.(png|jpg|jpeg|gif|svg|webp|ico)$ {
+        root /var/www/akropolis-maintenance;
+    }
 }

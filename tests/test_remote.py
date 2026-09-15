@@ -41,8 +41,14 @@ class FakeConn:
 # --- render() -------------------------------------------------------------
 
 def test_render_static_template_needs_no_context():
-    out = remote.render("maintenance.html")
+    out = remote.render("maintenance.html.j2")
     assert "<html" in out
+    assert "<img" not in out
+
+
+def test_render_maintenance_template_with_logo():
+    out = remote.render("maintenance.html.j2", logo_name="maintenance-logo.png")
+    assert '<img class="logo" src="/maintenance-logo.png"' in out
 
 
 def test_render_substitutes_context():

@@ -113,6 +113,12 @@ http {
             root /usr/share/nginx/html;
         }
 
+        # Branding logo (reused from authentik.branding.logo), shown on the
+        # maintenance page above — absent unless that setting is configured.
+        location ~ ^/maintenance-logo\.(png|jpg|jpeg|gif|svg|webp|ico)$ {
+            root /usr/share/nginx/html;
+        }
+
         # Monitor endpoint - identifies which node currently holds the VIP
         location /monitor {
             default_type application/json;

@@ -11,6 +11,19 @@ dead ends.
 
 ## [Unreleased]
 
+## [2.3.0] - 2026-09-15
+
+### Added
+
+- The maintenance page (nginx's fallback whenever Authentik is unreachable,
+  single-node and HA alike) now reuses `authentik.branding.logo` when it's
+  configured, instead of going text-only during an outage. The same local
+  file authentik_phase already mounts into Authentik's own login page is
+  uploaded separately to nginx's webroot and served from a dedicated
+  location so it keeps working even while every Authentik backend is down
+  (the whole point of the page); absent when branding isn't configured, and
+  the `<img>` removes itself client-side if the file is ever missing.
+
 ## [2.2.3] - 2026-09-14
 
 ### Fixed
