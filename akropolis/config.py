@@ -35,7 +35,12 @@ VALID_TOPOLOGIES = {"ha", "single"}
 #       auto-update behavior will have it turned off on the next `base`
 #       apply (fresh provision or `--replay base`) unless
 #       `base.unattended_upgrades: true` is added first -- see CHANGELOG.md.
-CONFIG_SCHEMA_VERSION = 2
+#   3 : `monitor.ip` (single string) removed in favour of `monitor.ips` (a
+#       list) -- multiple monitoring hosts/CIDRs are now supported. A config
+#       predating this bump must move its `monitor.ip: <ip>` value into
+#       `monitor.ips: [<ip>]` (add more entries as needed); loading refuses
+#       outright while the old key is still present.
+CONFIG_SCHEMA_VERSION = 3
 
 # Default Authentik image tag per topology. Kept separate deliberately: the
 # 3-node HA cluster stays pinned to 2026.5.6 (2026.8.0 hit an embedded-outpost
@@ -130,6 +135,39 @@ def _get(d: dict, path: str, default=None):
             return default
         cur = cur[key]
     return cur
+
+
+def is_valid_ip_or_cidr(v: str) -> bool:
+    try:
+        ipaddress.ip_address(v)
+        return True
+    except ValueError:
+        pass
+    try:
+        ipaddress.ip_network(v, strict=False)
+        return True
+    except ValueError:
+        return False
+
+
+def monitor_ips_from_raw(raw: dict) -> list[str]:
+    """monitor.ips from a site config's raw dict, blank entries dropped."""
+    mon = raw.get("monitor") or {}
+    return [str(v).strip() for v in (mon.get("ips") or []) if str(v).strip()]
+
+
+def resolved_monitor_ips(raw: dict, generated: dict) -> list[str]:
+    """monitor_ips_from_raw(), falling back to whatever a previous run already
+    pinned in state (generated.monitor_ips, or a pre-schema-v3 install's
+    generated.monitor_ip) when the config itself carries no monitor IPs."""
+    ips = monitor_ips_from_raw(raw)
+    if ips:
+        return ips
+    if generated.get("monitor_ips"):
+        return list(generated["monitor_ips"])
+    if generated.get("monitor_ip"):
+        return [generated["monitor_ip"]]
+    return []
 
 
 def load(path: str | Path) -> SiteConfig:
@@ -297,15 +335,29 @@ def load(path: str | Path) -> SiteConfig:
             f"in quotes: authentik.tag: \"2026.8.1\"")
 
     # --- monitor (optional) ---
-    mon_ip = str(_get(raw, "monitor.ip", "") or "").strip()
-    if mon_ip:
-        try:
-            ipaddress.ip_address(mon_ip)
-        except ValueError:
-            problems.append(f"monitor.ip: invalid IP: {mon_ip!r}")
-        if mon_ip in seen_ips:
-            problems.append(f"monitor.ip {mon_ip} collides with a node IP — "
-                            "node IPs are already fully allowed through UFW")
+    # `monitor.ips`: any mix of plain IPs and CIDR ranges, for a monitor with
+    # more than one address (or a whole subnet of NAT'd probes) that needs the
+    # same UFW/stub_status allowance. Replaced the single-string `monitor.ip`
+    # at schema v3 -- see CONFIG_SCHEMA_VERSION above.
+    if _get(raw, "monitor.ip") is not None:
+        problems.append(
+            "monitor.ip was replaced by monitor.ips (a list) in config schema "
+            "v3 — move the value into monitor.ips: [<ip>] (add more entries as "
+            "needed) and remove monitor.ip")
+
+    mon_ips_raw = _get(raw, "monitor.ips", []) or []
+    if not isinstance(mon_ips_raw, list):
+        problems.append("monitor.ips must be a list of IP/CIDR strings")
+    else:
+        for entry in mon_ips_raw:
+            entry = str(entry).strip()
+            if not entry:
+                continue
+            if not is_valid_ip_or_cidr(entry):
+                problems.append(f"monitor.ips: invalid IP/CIDR: {entry!r}")
+            elif entry in seen_ips:
+                problems.append(f"monitor.ips entry {entry} collides with a node IP — "
+                                "node IPs are already fully allowed through UFW")
 
     if problems:
         raise ConfigError(problems)

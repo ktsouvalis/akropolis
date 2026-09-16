@@ -33,6 +33,7 @@ import shlex
 from importlib import resources
 from pathlib import Path
 
+from ..config import resolved_monitor_ips
 from ..remote import push_binary, push_file, render, wait_for
 from .base import Phase, PhaseContext
 
@@ -50,10 +51,9 @@ class NginxKeepalivedPhase(Phase):
     def _stub_allow(self, ctx: PhaseContext) -> list[str]:
         cfg = ctx.cfg
         allow = list((cfg.raw.get("network") or {}).get("stub_status_allow", []) or [])
-        mon = str(((cfg.raw.get("monitor") or {}).get("ip") or "")).strip() \
-            or ctx.state.data["generated"].get("monitor_ip", "")
-        if mon and mon not in allow:
-            allow.append(mon)
+        for mon in resolved_monitor_ips(cfg.raw, ctx.state.data["generated"]):
+            if mon not in allow:
+                allow.append(mon)
         return allow
 
     def _subnet(self, ctx: PhaseContext) -> str:

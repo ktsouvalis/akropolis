@@ -11,6 +11,20 @@ dead ends.
 
 ## [Unreleased]
 
+## [2.4.0] - 2026-09-16
+
+### Changed
+
+- **Breaking (config schema v3):** `monitor.ip` (single string) is replaced
+  by `monitor.ips` (a list) — a site config can now allow any number of
+  monitoring IPs and/or CIDR ranges through UFW and nginx's
+  `stub_status_allow`, instead of just one. The `base` phase opens a UFW
+  rule for each entry, and the nginx phases (both topologies) add each to
+  `stub_status_allow`. The `akropolis init` wizard now accepts a
+  comma-separated list at the monitor-IP prompt. `monitor.ip` is no longer
+  read — move its value into `monitor.ips: [<ip>]` (add more entries as
+  needed) and bump `site.config_version` to 3.
+
 ## [2.3.0] - 2026-09-15
 
 ### Added

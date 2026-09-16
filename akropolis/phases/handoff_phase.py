@@ -19,6 +19,7 @@ from pathlib import Path
 
 import yaml
 
+from ..config import resolved_monitor_ips
 from ..remote import base_url as _base_url
 from ..remote import render
 from .base import Phase, PhaseContext, console
@@ -112,15 +113,15 @@ class HandoffPhase(Phase):
             console.print(f"  transcript: [bold]{transcript.path}[/bold] (every command "
                           "run on every node this session, secrets best-effort "
                           "redacted — mode 0600)")
-        mon_ip = str(((cfg.raw.get("monitor") or {}).get("ip") or "")).strip() \
-            or gen.get("monitor_ip", "")
-        if mon_ip:
-            console.print(f"  monitor ip: [bold]{mon_ip}[/bold] allowed through UFW "
+        mon_ips = resolved_monitor_ips(cfg.raw, gen)
+        if mon_ips:
+            label = "monitor ip" if len(mon_ips) == 1 else "monitor ips"
+            console.print(f"  {label}: [bold]{', '.join(mon_ips)}[/bold] allowed through UFW "
                           "(etcd/PG/Patroni/stats/API ports) on every node")
         else:
             console.print("  [yellow]NOTE: no monitor IP was allowed through UFW — "
                           "the monitor's Patroni/etcd/stats columns will show DOWN "
-                          "unless it runs from a node. Set monitor.ip and "
+                          "unless it runs from a node. Set monitor.ips and "
                           "--replay base.[/yellow]")
         if not cfg.ssh.key_file:
             console.print("  [yellow]NOTE: ssh.key_file was not set in the site config — "

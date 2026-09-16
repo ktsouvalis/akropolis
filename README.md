@@ -300,7 +300,7 @@ That last one is deliberately loose. akropolis reports whether the answer happen
 
 Guide Step 1. Hostname per node, an akropolis-marker-managed block in `/etc/hosts` (removable and re-runnable), baseline packages + chrony, Docker CE from Docker's own repository, and UFW: default deny incoming, allow ssh/80/443/9000 and all traffic between the three node IPs, then `--force enable` (the ssh rule always lands before enable).
 
-The monitoring host gets its own UFW opening: `monitor.ip` in the site config (or an interactive question, answer pinned in state, Enter to skip) is allowed to `2379,5000,5001,8008,8080,9000,9443/tcp` on every node. ak-monitor is not one of the nodes, so without this rule default-deny silently blanks every dashboard column that isn't plain HTTPS; the polls just time out.
+The monitoring host(s) get their own UFW opening: `monitor.ips` (a list of IPs and/or CIDRs) in the site config — or an interactive question, answer pinned in state, Enter to skip — is allowed to `2379,5000,5001,8008,8080,9000,9443/tcp` on every node. ak-monitor is not one of the nodes, so without this rule default-deny silently blanks every dashboard column that isn't plain HTTPS; the polls just time out.
 
 `apt upgrade` is deliberately **not** run unless `base.apt_upgrade: true`: package drift belongs to your patching policy, not the provisioner. For the same reason, the OS's own `unattended-upgrades` service and `apt-daily-upgrade.timer` are masked by default — a package changing under a running Patroni on the OS's own schedule is the same risk, just silent; set `base.unattended_upgrades: true` to leave the OS default alone.
 
@@ -487,7 +487,7 @@ problem that split exists for on 3 nodes (migrations racing against one
 database), so `apply` is just render + `docker compose up -d` + a health
 gate. It also resolves the AUTHENTIK_ERROR_REPORTING__ENABLED guide-vs-code
 mismatch by making it an explicit `authentik.error_reporting` setting:
-config, or asked once and pinned in state, same pattern as `monitor.ip`,
+config, or asked once and pinned in state, same pattern as `monitor.ips`,
 instead of a silent default; this is single-node-only for now, the HA phase
 still hardcodes `false`.
 

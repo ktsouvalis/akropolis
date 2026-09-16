@@ -13,7 +13,7 @@ site:
   environment: lab                # lab | production
                                   #   production: every apply phase requires typing the
                                   #   site name to confirm; --force is ignored.
-  config_version: 2               # pins this file to the config shape akropolis expects.
+  config_version: 3               # pins this file to the config shape akropolis expects.
                                   #   `provision`/`shutdown`/`start`/`clean` refuse to run
                                   #   on a mismatch rather than guess at a renamed/removed
                                   #   key -- see CHANGELOG.md and CONFIG_SCHEMA_VERSION in
@@ -99,8 +99,8 @@ network:
   #   - 192.168.20.20             # IPs or CIDRs of the upstream proxy
 
   # Extra sources allowed to read nginx stub_status on :8080. Loopback and the
-  # node subnet are always allowed, and monitor.ip is added automatically; add
-  # CIDRs here only for additional off-subnet collectors.
+  # node subnet are always allowed, and monitor.ips is added automatically;
+  # add CIDRs here only for additional off-subnet collectors.
   # stub_status_allow:
   #   - 10.10.0.0/16
 
@@ -200,7 +200,7 @@ authentik:
   # error_reporting: false        # optional, single-node topology only for now (the HA
                                    # phase still hardcodes false; see NOTES.md). Unset →
                                    # asked interactively at apply time, answer pinned in
-                                   # state (same pattern as monitor.ip / SMTP below).
+                                   # state (same pattern as monitor.ips / SMTP below).
                                    # AUTHENTIK_ERROR_REPORTING__ENABLED.
   # AUTHENTIK_SECRET_KEY: generated once, recorded encrypted in state, identical on all nodes
   # Listen ports pinned off HAProxy's 9000 (guide 7.x): http 9080 / https 9443 / metrics 9300
@@ -271,11 +271,14 @@ secrets:
 monitor:
   emit: true
   output: ./config.example-site.monitor.yml
-  # ip: 10.0.0.90               # the ak-monitor host; the base phase adds a UFW rule
-                                  # allowing it to 2379,5000,5001,8008,9000,9443/tcp on
-                                  # every node (ha) or just 8080/tcp, nginx's stub_status
-                                  # (single). Omit → asked interactively (Enter to skip;
-                                  # the answer is pinned in state).
+  # ips:                        # any number of ak-monitor hosts and/or CIDR ranges
+  #   - 10.0.0.90
+  #   - 10.0.1.0/24
+                                  # The base phase adds a UFW rule allowing each entry to
+                                  # 2379,5000,5001,8008,9000,9443/tcp on every node (ha) or
+                                  # just 8080/tcp, nginx's stub_status (single). Omit →
+                                  # asked interactively (Enter to skip; the answer is pinned
+                                  # in state).
   # Emitted contents: nodes/IPs, VIP, Patroni REST :8008, etcd :2379,
   # HAProxy stats :9000 (csv), Authentik health endpoints, worker check via
   # /api/v3/tasks/workers/, API token, and cert expiry date when provider=import.

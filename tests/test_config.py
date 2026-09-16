@@ -396,22 +396,40 @@ def test_default_authentik_tag_by_topology(write_config):
 
 # --- monitor (optional) --------------------------------------------------
 
-def test_invalid_monitor_ip_reported(write_config):
-    path = write_config(HA_BASE, {"monitor": {"ip": "garbage"}})
-    with pytest.raises(ConfigError, match="monitor.ip: invalid IP"):
+def test_monitor_ip_key_rejected(write_config):
+    path = write_config(HA_BASE, {"monitor": {"ip": "10.0.1.5"}})
+    with pytest.raises(ConfigError, match="monitor.ip was replaced by monitor.ips"):
         load(path)
 
 
-def test_monitor_ip_colliding_with_node_reported(write_config):
-    path = write_config(HA_BASE, {"monitor": {"ip": "10.0.0.1"}})
-    with pytest.raises(ConfigError, match="monitor.ip 10.0.0.1 collides"):
-        load(path)
-
-
-def test_monitor_ip_optional(write_config):
+def test_monitor_ips_optional(write_config):
     path = write_config(HA_BASE)
     cfg = load(path)  # no monitor block at all -- must not raise
     assert cfg.name == "test-site"
+
+
+def test_monitor_ips_list_accepts_ips_and_cidrs(write_config):
+    path = write_config(HA_BASE, {"monitor": {"ips": ["10.0.1.5", "10.0.2.0/24"]}})
+    cfg = load(path)  # must not raise
+    assert config_mod.monitor_ips_from_raw(cfg.raw) == ["10.0.1.5", "10.0.2.0/24"]
+
+
+def test_monitor_ips_invalid_entry_reported(write_config):
+    path = write_config(HA_BASE, {"monitor": {"ips": ["garbage"]}})
+    with pytest.raises(ConfigError, match="monitor.ips: invalid IP/CIDR"):
+        load(path)
+
+
+def test_monitor_ips_entry_colliding_with_node_reported(write_config):
+    path = write_config(HA_BASE, {"monitor": {"ips": ["10.0.0.1"]}})
+    with pytest.raises(ConfigError, match="monitor.ips entry 10.0.0.1 collides"):
+        load(path)
+
+
+def test_monitor_ips_not_a_list_reported(write_config):
+    path = write_config(HA_BASE, {"monitor": {"ips": "10.0.1.5"}})
+    with pytest.raises(ConfigError, match="monitor.ips must be a list"):
+        load(path)
 
 
 # --- multiple problems reported together --------------------------------

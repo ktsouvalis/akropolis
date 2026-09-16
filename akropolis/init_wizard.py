@@ -12,7 +12,7 @@ from pathlib import Path
 import yaml
 from rich.console import Console
 
-from .config import CONFIG_SCHEMA_VERSION, DEFAULT_AUTHENTIK_TAG
+from .config import CONFIG_SCHEMA_VERSION, DEFAULT_AUTHENTIK_TAG, is_valid_ip_or_cidr
 
 console = Console()
 
@@ -43,6 +43,13 @@ def _valid_ip(v: str) -> str | None:
         return None
     except ValueError:
         return f"{v!r} is not a valid IP address"
+
+
+def _valid_ip_or_cidr_list(v: str) -> str | None:
+    for entry in [e.strip() for e in v.split(",") if e.strip()]:
+        if not is_valid_ip_or_cidr(entry):
+            return f"{entry!r} is not a valid IP address or CIDR"
+    return None
 
 
 class _Quoted(str):
@@ -171,13 +178,15 @@ def run_wizard(output: str | None = None) -> Path:
     if branding:
         authentik_extra["branding"] = branding
 
-    monitor_prompt = ("monitoring host IP (allowed through UFW to Patroni/etcd/"
-                      "HAProxy/Authentik ports; Enter to skip)" if topology == "ha" else
-                      "monitoring host IP (allowed through UFW to nginx's stub_status "
-                      "port; Enter to skip)")
-    monitor_ip = _ask(monitor_prompt, default="-",
-                      validate=lambda v: None if v == "-" else _valid_ip(v))
-    monitor_ip = "" if monitor_ip == "-" else monitor_ip
+    monitor_prompt = ("monitoring host IP(s)/CIDR(s), comma-separated (allowed through "
+                      "UFW to Patroni/etcd/HAProxy/Authentik ports; Enter to skip)"
+                      if topology == "ha" else
+                      "monitoring host IP(s)/CIDR(s), comma-separated (allowed through "
+                      "UFW to nginx's stub_status port; Enter to skip)")
+    monitor_ips_raw = _ask(monitor_prompt, default="-",
+                           validate=lambda v: None if v == "-" else _valid_ip_or_cidr_list(v))
+    monitor_ips = [] if monitor_ips_raw == "-" else \
+        [e.strip() for e in monitor_ips_raw.split(",") if e.strip()]
 
     cfg = {
         "site": {"name": site, "environment": env, "topology": topology,
@@ -205,7 +214,7 @@ def run_wizard(output: str | None = None) -> Path:
             **authentik_extra},
         "secrets": {"source": "prompt"},
         "monitor": {"emit": True, "output": f"./config.{site}.monitor.yml",
-                    **({"ip": monitor_ip} if monitor_ip else {})},
+                    **({"ips": monitor_ips} if monitor_ips else {})},
     }
 
     out = Path(output or f"config.{site}.yml")

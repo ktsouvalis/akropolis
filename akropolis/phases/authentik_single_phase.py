@@ -72,7 +72,7 @@ class AuthentikSinglePhase(Phase):
                                  lambda: pysecrets.token_urlsafe(45)),
         }
 
-    # error_reporting: config-or-prompt-pinned, same pattern as monitor.ip and
+    # error_reporting: config-or-prompt-pinned, same pattern as monitor.ips and
     # the SMTP block below. Resolves the open guide-vs-code mismatch (the v21
     # guide says true, the HA template hardcodes false) by making it an
     # explicit, discoverable decision instead of a silent default either way.

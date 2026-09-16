@@ -48,6 +48,7 @@ import os
 import shlex
 from pathlib import Path
 
+from ..config import resolved_monitor_ips
 from ..remote import push_binary, push_file, render
 from .base import Phase, PhaseContext
 
@@ -74,10 +75,9 @@ class NginxSinglePhase(Phase):
     def _stub_allow(self, ctx: PhaseContext) -> list[str]:
         cfg = ctx.cfg
         allow = list((cfg.raw.get("network") or {}).get("stub_status_allow", []) or [])
-        mon = str(((cfg.raw.get("monitor") or {}).get("ip") or "")).strip() \
-            or ctx.state.data["generated"].get("monitor_ip", "")
-        if mon and mon not in allow:
-            allow.append(mon)
+        for mon in resolved_monitor_ips(cfg.raw, ctx.state.data["generated"]):
+            if mon not in allow:
+                allow.append(mon)
         return allow
 
     # authentik.branding.logo is the same file authentik_phase mounts into
@@ -128,7 +128,7 @@ class NginxSinglePhase(Phase):
                          "TLS :443 proxy -> Authentik's own HTTPS listener (9443, "
                          "loopback-only, proxy_ssl_verify off — same trust split "
                          "the HA topology's nginx already uses)")
-        lines.append("stub_status on :8080 for the monitor (loopback + monitor.ip)")
+        lines.append("stub_status on :8080 for the monitor (loopback + monitor.ips)")
         lines.append("nginx -t, then enable/reload (bare metal — no bind-mount, "
                      "reload is always safe, unlike the HA container's inode trap)")
         return lines
