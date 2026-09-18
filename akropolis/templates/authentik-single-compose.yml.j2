@@ -1,7 +1,7 @@
 services:
   postgresql:
     image: docker.io/library/postgres:16-alpine
-    restart: unless-stopped
+    restart: "no"
     env_file:
       - .env
     environment:
@@ -27,7 +27,7 @@ services:
       postgresql:
         condition: service_healthy
     image: ghcr.io/goauthentik/server:${AUTHENTIK_TAG}
-    restart: unless-stopped
+    restart: "no"
     shm_size: 512mb
     # Container's OWN internal ports stay the image defaults (9443 https
     # self-signed, 9000 http) — never privileged, so no cap_add/root needed.
@@ -60,7 +60,7 @@ services:
       postgresql:
         condition: service_healthy
     image: ghcr.io/goauthentik/server:${AUTHENTIK_TAG}
-    restart: unless-stopped
+    restart: "no"
     shm_size: 512mb
     # No AUTHENTIK_LISTEN__* overrides needed, unlike the HA cluster's
     # worker: without network_mode: host, server and worker are in

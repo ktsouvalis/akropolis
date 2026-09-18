@@ -11,6 +11,26 @@ dead ends.
 
 ## [Unreleased]
 
+## [2.4.1] - 2026-09-18
+
+### Fixed
+
+- Authentik nodes, both topologies: `restart: unless-stopped` let dockerd
+  restart the authentik containers directly on a host reboot, as soon as the
+  Docker socket came up — bypassing `depends_on: condition: service_healthy`
+  entirely (HA: the worker/server dual-port-bind ordering; single-node: both
+  depending on postgresql). All affected services now carry `restart: "no"`,
+  and a new `authentik-compose.service` (oneshot systemd unit, `After=`/
+  `Requires=docker.service network-online.target`) owns `docker compose
+  up`/`down` instead, the same discipline `patroni.service` already applies
+  to the non-container half of the HA stack. Found and fixed by hand on a
+  live cluster first; ported into the `authentik` (HA and single-node) and
+  `clean` phases here. `etcd`/`haproxy`/`nginx` compose files are unaffected
+  — none of them has a `depends_on` chain for dockerd's direct restart to
+  bypass. Tradeoff worth knowing: a container that crashes on its own (not a
+  reboot) no longer restarts itself — recovery is manual (`systemctl
+  restart authentik-compose` or a re-`apply`).
+
 ## [2.4.0] - 2026-09-16
 
 ### Changed

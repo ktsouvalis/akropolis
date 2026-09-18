@@ -28,7 +28,14 @@ Deliberately reuses the exact same on-disk path as the HA phase
 (/opt/authentik), so the health-gate, log-dump, and branding helpers from
 authentik_phase.py apply unchanged (container names — authentik-server-1 /
 authentik-worker-1 — come from the compose *project* directory name, which
-is the same on both topologies).
+is the same on both topologies). That shared path is also why this phase
+reuses the HA phase's authentik-compose.service unit unchanged: all three
+services here have a `depends_on: condition: service_healthy` chain
+(server/worker -> postgresql), so the same boot-time bug applies — dockerd
+restarting `unless-stopped` containers directly on reboot skips that
+ordering entirely. `restart: "no"` + the systemd unit (After=/Requires=
+docker.service network-online.target) makes `docker compose up -d` own
+startup again, same as the HA cluster.
 
 TODO(cleanup): _email()/_branding_volumes()/_acfg() below are near-identical
 copies of the same methods on AuthentikPhase (HA). Left duplicated rather
@@ -202,10 +209,14 @@ class AuthentikSinglePhase(Phase):
             lines.append(f"branding: upload {', '.join(named)}, bind-mount over "
                          "/web/dist/assets/{icons,images}/, AND point the default brand "
                          "at /static/dist/assets/... via the API")
-        lines.append("apply: docker compose up -d, then gate on server+worker healthy "
-                     "(both start concurrently once postgresql is healthy; Authentik's "
-                     "own internal database lock coordinates migrations between them — "
-                     "no manual bootstrap choreography needed)")
+        lines.append("install authentik-compose.service (systemd, After=docker.service "
+                     "network-online.target) and enable it — restart: \"no\" in compose "
+                     "means dockerd no longer restarts containers directly on boot ahead "
+                     "of the postgresql -> server/worker health-gated order")
+        lines.append("apply: systemctl start authentik-compose, then gate on server+worker "
+                     "healthy (both start concurrently once postgresql is healthy; "
+                     "Authentik's own internal database lock coordinates migrations "
+                     "between them — no manual bootstrap choreography needed)")
         lines.append("verify: server+worker healthy, /-/health/ready/ 200, "
                      "API answers with the bootstrap token")
         return lines
@@ -236,14 +247,20 @@ class AuthentikSinglePhase(Phase):
                          + list(acfg.get("extra_server_volumes", []) or []),
                          extra_worker_volumes=list(acfg.get("extra_worker_volumes", []) or []))
 
+        unit = __import__("importlib").resources.files("akropolis.templates") \
+            .joinpath("authentik-compose.service").read_text()
+
         conn = ctx.fleet.conns[0]  # topology: single — config.py enforces exactly 1 node
         node = conn.node.name
         conn.run("mkdir -p /opt/authentik/data /opt/authentik/certs "
                  "/opt/authentik/custom-templates")
         c1 = push_file(conn, env, "/opt/authentik/.env", mode="0600")
         c2 = push_file(conn, compose, "/opt/authentik/docker-compose.yml")
-        changed = c1 or c2
-        ctx.record(node, "config rendered", True, "changed" if changed else "unchanged")
+        c3 = push_file(conn, unit, "/etc/systemd/system/authentik-compose.service")
+        changed = c1 or c2 or c3
+        r = conn.run("systemctl daemon-reload && systemctl enable authentik-compose")
+        ctx.record(node, "config + unit rendered", r.ok,
+                   ("changed" if changed else "unchanged") if r.ok else r.err)
 
         # Fresh bootstrap: server and worker start concurrently once
         # postgresql is healthy (no depends_on between them — see module
@@ -253,10 +270,16 @@ class AuthentikSinglePhase(Phase):
         # HA cluster's restore phase (see NOTES.md) — that trap was a
         # consequence of network_mode: host forcing an explicit worker-then-
         # server order, which single-node no longer has any reason to do.
-        ctx.begin(node, "compose up",
+        # `restart`, not `start`: on a fresh node (unit never started) systemd
+        # treats restart exactly like start, but on a re-apply against an
+        # already-running node (e.g. an authentik.tag bump) `start` on an
+        # already-active RemainAfterExit=yes unit is a no-op — it would never
+        # re-run `docker compose up -d` to pick up the change. `restart`
+        # forces the real `down && up -d` cycle in both cases.
+        ctx.begin(node, "compose restart",
                   "postgresql healthy, then server + worker concurrently; "
                   "image pull can take minutes")
-        r = conn.run("cd /opt/authentik && docker compose up -d", timeout=1800)
+        r = conn.run("systemctl restart authentik-compose", timeout=1800)
         ctx.record(node, "starting", r.ok, r.err if not r.ok else "")
         good = r.ok and wait_healthy(ctx, conn, timeout=900,
                                      label="waiting for server+worker healthy")

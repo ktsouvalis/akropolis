@@ -11,9 +11,13 @@ Two distinct execution paths, chosen by looking at what's actually running:
 
   ROLLING (config/tag change on a running cluster): apply node-3 → node-2 →
   node-1 (reverse fleet order — the change order used in production), one node
-  at a time, `down && up -d` (never `restart`), gating on `healthy` before
-  moving on. A node that fails its gate stops the phase with two nodes still
-  serving.
+  at a time, full recreate (never an in-place `docker compose restart`, which
+  wouldn't pick up an image/env change), gating on `healthy` before moving on.
+  A node that fails its gate stops the phase with two nodes still serving.
+  In code this recreate is `systemctl restart authentik-compose` — note that's
+  systemd's verb, not compose's: the unit's ExecStop/ExecStart pair is exactly
+  `docker compose down` then `docker compose up -d`, the full recreate this
+  phase has always required, not a bare `docker compose restart`.
 
 The compose file mirrors the production one verbatim (including the
 python3/urllib healthchecks that replaced curl when the 2026.5.6 image dropped
@@ -22,6 +26,19 @@ it, worker as root with the docker socket for outpost management, and
 Site-specific mounts (branding, locale chunks) are NOT hardcoded — use
 `authentik.extra_server_volumes` / `authentik.extra_worker_volumes` in the
 site config.
+
+Both services carry `restart: "no"`, not `unless-stopped`: on a host reboot,
+dockerd itself restarts `unless-stopped` containers directly as soon as the
+Docker socket is up, bypassing `depends_on: condition: service_healthy`
+entirely — the worker/server dual-port race and the migration-gating this
+phase relies on both go unenforced. Instead, `authentik-compose.service`
+(a oneshot systemd unit, `After=`/`Requires=docker.service
+network-online.target`) owns bringing the stack up via `docker compose up -d`
+once docker is actually ready, the same discipline patroni.service already
+applies to the non-container half of this stack. The tradeoff: a container
+that crashes on its own (not a reboot) no longer restarts itself — recovery
+is manual (`systemctl restart authentik-compose` or a re-`apply`), since
+nothing here watches for that and auto-heals.
 
 Generated once and pinned in state: AUTHENTIK_SECRET_KEY (identical on all
 nodes — non-negotiable), the akadmin bootstrap password, and the bootstrap API
@@ -355,6 +372,10 @@ class AuthentikPhase(Phase):
             f"render /opt/authentik/.env (0600) + docker-compose.yml on all nodes — "
             f"tag {cfg.authentik_tag}, PG via 127.0.0.1:5000, listen ports 9080/9443/9300 "
             "(off HAProxy's 9000), python3/urllib healthchecks (curl absent from image)",
+            "install authentik-compose.service (systemd, After=docker.service "
+            "network-online.target) and enable it — restart: \"no\" in compose means "
+            "dockerd no longer restarts containers directly on boot ahead of "
+            "docker compose's own health-gated startup",
             "AUTHENTIK_SECRET_KEY / bootstrap admin password / bootstrap API token: "
             "generated once, pinned in state, identical everywhere, never printed",
         ]
@@ -423,6 +444,8 @@ class AuthentikPhase(Phase):
                          extra_server_volumes=branding
                          + list(acfg.get("extra_server_volumes", []) or []),
                          extra_worker_volumes=list(acfg.get("extra_worker_volumes", []) or []))
+        unit = __import__("importlib").resources.files("akropolis.templates") \
+            .joinpath("authentik-compose.service").read_text()
 
         changed: dict[str, bool] = {}
         for conn in ctx.fleet:
@@ -431,9 +454,11 @@ class AuthentikPhase(Phase):
                      "/opt/authentik/custom-templates")
             c1 = push_file(conn, env, "/opt/authentik/.env", mode="0600")
             c2 = push_file(conn, compose, "/opt/authentik/docker-compose.yml")
-            changed[node] = c1 or c2
-            ctx.record(node, "config rendered", True,
-                       "changed" if changed[node] else "unchanged")
+            c3 = push_file(conn, unit, "/etc/systemd/system/authentik-compose.service")
+            changed[node] = c1 or c2 or c3
+            r = conn.run("systemctl daemon-reload && systemctl enable authentik-compose")
+            ctx.record(node, "config + unit rendered", r.ok,
+                       ("changed" if changed[node] else "unchanged") if r.ok else r.err)
 
         if rolling:
             # reverse fleet order: node-3 → node-2 → node-1
@@ -443,8 +468,7 @@ class AuthentikPhase(Phase):
                     ctx.record(node, "rolling: skipped", True, "config unchanged")
                     continue
                 ctx.begin(node, "rolling: down && up")
-                r = conn.run("cd /opt/authentik && docker compose down && "
-                             "docker compose up -d", timeout=1200)
+                r = conn.run("systemctl restart authentik-compose", timeout=1200)
                 ctx.record(node, "rolling: down && up", r.ok, r.err if not r.ok else "")
                 good = r.ok and wait_healthy(ctx, conn, timeout=900,
                                              label="rolling: waiting for healthy")
@@ -459,7 +483,7 @@ class AuthentikPhase(Phase):
             others = [c for c in ctx.fleet if not c.node.bootstrap_leader]
 
             ctx.begin(leader.node.name, "bootstrap: compose up", "image pull can take minutes")
-            r = leader.run("cd /opt/authentik && docker compose up -d", timeout=1800)
+            r = leader.run("systemctl restart authentik-compose", timeout=1800)
             ctx.record(leader.node.name, "bootstrap node starting", r.ok,
                        r.err if not r.ok else "pull + migrations in progress")
             good = r.ok and wait_healthy(ctx, leader, timeout=900,
@@ -476,7 +500,7 @@ class AuthentikPhase(Phase):
             for conn in others:
                 node = conn.node.name
                 ctx.begin(node, "compose up", "schema already migrated")
-                r = conn.run("cd /opt/authentik && docker compose up -d", timeout=1800)
+                r = conn.run("systemctl restart authentik-compose", timeout=1800)
                 ctx.record(node, "starting", r.ok, r.err if not r.ok else "")
                 good = r.ok and wait_healthy(ctx, conn, timeout=900)
                 ctx.record(node, "healthy", good,

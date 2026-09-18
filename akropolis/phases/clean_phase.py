@@ -59,8 +59,10 @@ STEPS: list[tuple[str, str]] = [
      "cd /opt/nginx 2>/dev/null && docker compose down -v 2>/dev/null; "
      "rm -rf /opt/nginx; true"),
     ("authentik down + removed",
+     "systemctl disable --now authentik-compose 2>/dev/null; "
      "cd /opt/authentik 2>/dev/null && docker compose down -v 2>/dev/null; "
-     "rm -rf /opt/authentik; true"),
+     "rm -rf /opt/authentik /etc/systemd/system/authentik-compose.service; "
+     "systemctl daemon-reload; true"),
     ("haproxy down + removed",
      "cd /opt/haproxy 2>/dev/null && docker compose down -v 2>/dev/null; "
      "rm -rf /opt/haproxy; true"),
@@ -101,8 +103,10 @@ STEPS_SINGLE: list[tuple[str, str]] = [
      "rm -rf /etc/nginx/akropolis-certs /var/www/akropolis-certbot /var/www/akropolis-maintenance; "
      "true"),
     ("authentik + postgres down + removed (incl. named volume)",
+     "systemctl disable --now authentik-compose 2>/dev/null; "
      "cd /opt/authentik 2>/dev/null && docker compose down -v 2>/dev/null; "
-     "rm -rf /opt/authentik; true"),
+     "rm -rf /opt/authentik /etc/systemd/system/authentik-compose.service; "
+     "systemctl daemon-reload; true"),
     ("TLS material removed",
      "rm -rf /etc/letsencrypt /var/www/certbot; true"),
     ("ufw reset (ssh re-allowed, left enabled)",
@@ -117,6 +121,7 @@ STEPS_SINGLE: list[tuple[str, str]] = [
 # Nothing akropolis-made may survive. Absence of each is verified per node.
 GONE = [
     ("/opt/authentik", "test ! -e /opt/authentik"),
+    ("authentik-compose unit", "test ! -e /etc/systemd/system/authentik-compose.service"),
     ("/opt/nginx", "test ! -e /opt/nginx"),
     ("/opt/haproxy", "test ! -e /opt/haproxy"),
     ("/opt/etcd", "test ! -e /opt/etcd"),
@@ -132,6 +137,7 @@ GONE = [
 
 GONE_SINGLE = [
     ("/opt/authentik", "test ! -e /opt/authentik"),
+    ("authentik-compose unit", "test ! -e /etc/systemd/system/authentik-compose.service"),
     ("no ak containers",
      "test -z \"$(docker ps -aq 2>/dev/null --filter name='authentik')\""),
     ("nginx config removed", "test ! -e /etc/nginx/sites-enabled/akropolis.conf"),
