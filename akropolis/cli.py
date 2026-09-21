@@ -238,11 +238,13 @@ def cmd_status(args: argparse.Namespace) -> int:
     rows = phase_rows(pipeline_for(cfg.topology), state)
 
     console.print(f"[bold]{cfg.name}[/bold] [dim]({cfg.topology}, {cfg.environment})[/dim]")
-    if cfg.state_file.exists():
-        console.print(f"state file: {cfg.state_file}")
-    else:
-        console.print(f"state file: {cfg.state_file} "
-                       "[dim](doesn't exist yet — nothing provisioned)[/dim]")
+    # Two separate print()s, not one line — a long state_file path must never
+    # be able to word-wrap into the note and split it across lines (bit us in
+    # CI, where the runner's tmp path is long enough to wrap a one-line
+    # version of this against Rich's default console width).
+    console.print(f"state file: {cfg.state_file}")
+    if not cfg.state_file.exists():
+        console.print("[dim](doesn't exist yet — nothing provisioned)[/dim]")
     console.print()
 
     table = Table(box=None, pad_edge=False)
