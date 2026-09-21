@@ -11,6 +11,26 @@ dead ends.
 
 ## [Unreleased]
 
+## [2.5.0] - 2026-09-21
+
+### Added
+
+- Single-node topology: PostgreSQL's 5432/tcp can now be published to the
+  host for remote backup tooling (`pg_dump`/`pg_basebackup`), gated by a new
+  `backup.ips` config key (any number of IPs/CIDRs; unset → asked
+  interactively at apply time, same pattern as `monitor.ips`). Refused
+  outright on `site.topology: ha`, which has no equivalent direct-to-host
+  path for PostgreSQL yet. Docker's own port-publish DNAT bypasses UFW's
+  filtering entirely, so a plain `ufw allow` rule would not actually
+  restrict anything — the real restriction is enforced in the `DOCKER-USER`
+  iptables chain instead (the one chain Docker itself never flushes), via a
+  new `akropolis-backup-fw` systemd unit the `base` phase installs and
+  re-applies on every boot and every `base` apply; a `ufw allow` rule is
+  still added alongside it purely so `ufw status` isn't misleadingly silent
+  about it. `akropolis clean` tears the unit and its DOCKER-USER rules back
+  down (`ufw --force reset` does not touch that chain — it's Docker's, not
+  UFW's).
+
 ## [2.4.1] - 2026-09-18
 
 ### Fixed

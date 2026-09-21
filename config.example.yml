@@ -282,3 +282,26 @@ monitor:
   # Emitted contents: nodes/IPs, VIP, Patroni REST :8008, etcd :2379,
   # HAProxy stats :9000 (csv), Authentik health endpoints, worker check via
   # /api/v3/tasks/workers/, API token, and cert expiry date when provider=import.
+
+# ---------------------------------------------------------------------------
+# Backup (optional, single-node topology only)
+# ---------------------------------------------------------------------------
+# backup:
+#   ips:                           # any number of backup-tool hosts and/or CIDR ranges
+#     - 10.0.0.90
+#     - 203.0.113.0/29
+                                    # Publishes PostgreSQL's 5432/tcp to the host for a
+                                    # remote pg_dump/pg_basebackup, and restricts it to
+                                    # exactly these IP(s)/CIDR(s). Omit → asked
+                                    # interactively at apply time (Enter to skip; the
+                                    # answer is pinned in state, same pattern as
+                                    # monitor.ips). Refused outright on topology: ha —
+                                    # PostgreSQL there has no direct-to-host path to
+                                    # publish (it's fronted by Patroni/HAProxy inside the
+                                    # cluster network instead).
+                                    # IMPORTANT: Docker's own port-publish bypasses UFW
+                                    # entirely, so the actual restriction is enforced in
+                                    # the DOCKER-USER iptables chain (base phase installs
+                                    # an `akropolis-backup-fw` systemd unit for this, so it
+                                    # survives a reboot) — a plain `ufw allow` rule is also
+                                    # added, but only so `ufw status` isn't misleading.

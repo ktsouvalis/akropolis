@@ -52,10 +52,12 @@ import secrets as pysecrets
 import shlex
 from pathlib import Path
 
+from ..config import resolved_backup_ips
 from ..remote import base_url, push_binary, push_file, render
 from .authentik_phase import (BRAND_FIELDS, apply_brand, dump_logs, pin_applied_tag,
                               tag_change_warning, wait_healthy)
 from .base import Phase, PhaseContext
+from .base_setup import BACKUP_PORT
 
 
 class AuthentikSinglePhase(Phase):
@@ -168,11 +170,16 @@ class AuthentikSinglePhase(Phase):
     def plan(self, ctx: PhaseContext) -> list[str]:
         cfg = ctx.cfg
         acfg = self._acfg(ctx)
+        backup_ips = resolved_backup_ips(cfg.raw, ctx.state.data["generated"])
+        pg_publish = (f"published to the host ({BACKUP_PORT}/tcp, restricted to "
+                      f"{', '.join(backup_ips)} — see the base phase's DOCKER-USER "
+                      "firewall) for remote backup" if backup_ips else
+                      "no published port — reached via Docker's own DNS, service name "
+                      "'postgresql'")
         lines = [
             f"render /opt/authentik/.env (0600) + docker-compose.yml on {cfg.nodes[0].name} — "
             f"tag {cfg.authentik_tag}, PostgreSQL as a postgres:16-alpine container "
-            "(no published port — reached via Docker's own DNS, service name "
-            "'postgresql'; named volume `database`)",
+            f"({pg_publish}; named volume `database`)",
             "server, worker: ordinary isolated containers (no network_mode: host, "
             "no AUTHENTIK_LISTEN__* overrides needed — nothing to conflict over), "
             "both depend only on postgresql being healthy, python3/urllib "
@@ -242,10 +249,12 @@ class AuthentikSinglePhase(Phase):
         # uploads happen before the compose file is rendered, so the mounts
         # in it always refer to files that are already on the node
         branding = self._branding_volumes(ctx)
+        backup_ips = resolved_backup_ips(cfg.raw, ctx.state.data["generated"])
         compose = render("authentik-single-compose.yml.j2",
                          extra_server_volumes=branding
                          + list(acfg.get("extra_server_volumes", []) or []),
-                         extra_worker_volumes=list(acfg.get("extra_worker_volumes", []) or []))
+                         extra_worker_volumes=list(acfg.get("extra_worker_volumes", []) or []),
+                         publish_pg_port=bool(backup_ips), pg_port=BACKUP_PORT)
 
         unit = __import__("importlib").resources.files("akropolis.templates") \
             .joinpath("authentik-compose.service").read_text()
@@ -315,4 +324,13 @@ class AuthentikSinglePhase(Phase):
             f"https://127.0.0.1:9443/api/v3/admin/version/")
         api = r2.out == "200"
         ctx.record(node, "verify: API with bootstrap token", api, f"HTTP {r2.out}")
-        return good and ready and api
+
+        pg_ok = True
+        backup_ips = resolved_backup_ips(ctx.cfg.raw, ctx.state.data["generated"])
+        if backup_ips:
+            r3 = conn.run(f"ss -ltn | grep -qE ':{BACKUP_PORT}\\s'")
+            pg_ok = r3.ok
+            ctx.record(node, f"verify: PostgreSQL {BACKUP_PORT} published", pg_ok,
+                       "" if pg_ok else "not listening — check the authentik-compose stack")
+
+        return good and ready and api and pg_ok

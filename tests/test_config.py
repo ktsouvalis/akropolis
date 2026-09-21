@@ -432,6 +432,44 @@ def test_monitor_ips_not_a_list_reported(write_config):
         load(path)
 
 
+# --- backup (optional, single-node only) ---------------------------------
+
+def test_backup_ips_optional(write_config):
+    path = write_config(SINGLE_BASE)
+    cfg = load(path)  # no backup block at all -- must not raise
+    assert cfg.name == "test-single"
+
+
+def test_backup_ips_list_accepts_ips_and_cidrs(write_config):
+    path = write_config(SINGLE_BASE, {"backup": {"ips": ["10.0.1.5", "10.0.2.0/24"]}})
+    cfg = load(path)  # must not raise
+    assert config_mod.backup_ips_from_raw(cfg.raw) == ["10.0.1.5", "10.0.2.0/24"]
+
+
+def test_backup_ips_invalid_entry_reported(write_config):
+    path = write_config(SINGLE_BASE, {"backup": {"ips": ["garbage"]}})
+    with pytest.raises(ConfigError, match="backup.ips: invalid IP/CIDR"):
+        load(path)
+
+
+def test_backup_ips_entry_colliding_with_node_reported(write_config):
+    path = write_config(SINGLE_BASE, {"backup": {"ips": ["10.0.0.1"]}})
+    with pytest.raises(ConfigError, match="backup.ips entry 10.0.0.1 collides"):
+        load(path)
+
+
+def test_backup_ips_not_a_list_reported(write_config):
+    path = write_config(SINGLE_BASE, {"backup": {"ips": "10.0.1.5"}})
+    with pytest.raises(ConfigError, match="backup.ips must be a list"):
+        load(path)
+
+
+def test_backup_ips_refused_on_ha(write_config):
+    path = write_config(HA_BASE, {"backup": {"ips": ["10.0.1.5"]}})
+    with pytest.raises(ConfigError, match="backup.ips is only supported for site.topology: single"):
+        load(path)
+
+
 # --- multiple problems reported together --------------------------------
 
 def test_multiple_problems_all_reported_together(write_config):

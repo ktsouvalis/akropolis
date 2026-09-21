@@ -1,0 +1,22 @@
+#!/bin/sh
+# akropolis: restrict PostgreSQL's published {{ backup_port }}/tcp to the
+# configured backup host(s) (site config: backup.ips). Docker's own
+# port-publish DNAT bypasses UFW's INPUT/FORWARD filtering entirely, so a
+# plain `ufw allow` has no effect on it -- DOCKER-USER is the one chain
+# Docker guarantees to leave alone once populated, which is where this
+# actually has to live. Re-run idempotently (this unit runs on every boot,
+# and akropolis pushes+restarts it on every `base` apply): always wipes any
+# akropolis-tagged rules first, then reinstalls the current set, so a config
+# change (IPs added/removed, or backup.ips emptied out entirely) converges
+# cleanly instead of accumulating stale rules.
+set -e
+
+iptables -S DOCKER-USER 2>/dev/null | grep -- '--comment akropolis-backup' \
+  | sed 's/^-A /-D /' | while read -r rule; do iptables $rule; done
+{% if backup_ips %}
+iptables -I DOCKER-USER 1 -p tcp --dport {{ backup_port }} -m comment --comment akropolis-backup -j DROP
+{% for ip in backup_ips | reverse %}
+iptables -I DOCKER-USER 1 -s {{ ip }} -p tcp --dport {{ backup_port }} -m comment --comment akropolis-backup -j ACCEPT
+{% endfor %}
+{% endif %}
+true

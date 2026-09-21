@@ -15,8 +15,10 @@ OS default (enabled) alone.
 
 from __future__ import annotations
 
-from ..config import is_valid_ip_or_cidr, resolved_monitor_ips
-from ..remote import push_file
+from importlib import resources
+
+from ..config import is_valid_ip_or_cidr, resolved_backup_ips, resolved_monitor_ips
+from ..remote import push_file, render
 from .base import Phase, PhaseContext
 
 # Everything ak-monitor polls on the HA cluster: etcd client, PG via HAProxy
@@ -34,6 +36,12 @@ MONITOR_PORTS_HA = "2379,5000,5001,8008,8080,9000,9443"
 # nginx_single_phase.py) — same reasoning as HA's 8080 entry above: the ACL
 # is inside nginx, but UFW drops the packet first if this rule is missing.
 MONITOR_PORTS_SINGLE = "8080"
+
+# single only: PostgreSQL's published port, for a remote pg_dump/pg_basebackup
+# (site config: backup.ips — see config.py, authentik-single-compose.yml.j2,
+# and the DOCKER-USER firewall handling below). Unpublished, and this whole
+# code path a no-op, unless backup.ips is set.
+BACKUP_PORT = "5432"
 
 PACKAGES = ("curl wget gnupg2 ca-certificates lsb-release "
             "apt-transport-https software-properties-common "
@@ -78,6 +86,33 @@ class BasePhase(Phase):
 
         return ctx.state.get_or_generate("monitor_ips", ask)
 
+    # ------------------------------------------------------------- backup ip
+    # Same resolution order as monitor ips (config → prompt, pinned in
+    # state). Single-node only — config.py refuses backup.ips on HA.
+    def _backup_ips(self, ctx: PhaseContext) -> list[str]:
+        if ctx.cfg.topology != "single":
+            return []
+        gen = ctx.state.data["generated"]
+        ips = resolved_backup_ips(ctx.cfg.raw, gen)
+        if ips or "backup_ips" in gen:
+            return ips  # config had none, but a prior run already pinned an (possibly empty) answer
+
+        def ask() -> list[str]:
+            while True:
+                v = input("backup host IP(s)/CIDR(s) to allow straight through to "
+                          f"PostgreSQL ({BACKUP_PORT}/tcp; comma-separated, Enter to "
+                          "skip — leaves PostgreSQL unpublished): ").strip()
+                if not v:
+                    return []
+                entries = [e.strip() for e in v.split(",") if e.strip()]
+                bad = [e for e in entries if not is_valid_ip_or_cidr(e)]
+                if bad:
+                    print(f"  not a valid IP or CIDR: {', '.join(bad)}")
+                    continue
+                return entries
+
+        return ctx.state.get_or_generate("backup_ips", ask)
+
     def plan(self, ctx: PhaseContext) -> list[str]:
         cfg = ctx.cfg
         upgrade = bool((cfg.raw.get("base") or {}).get("apt_upgrade", False))
@@ -117,6 +152,19 @@ class BasePhase(Phase):
                     if mon_ips else
                     "UFW: no monitor host in config — you will be asked interactively "
                     "(Enter to skip; the answer is pinned in state)")
+        if cfg.topology == "single":
+            backup_ips = resolved_backup_ips(cfg.raw, ctx.state.data["generated"])
+            if backup_ips:
+                lines.append(f"UFW + DOCKER-USER: allow backup host(s) "
+                             f"{', '.join(backup_ips)} to PostgreSQL's {BACKUP_PORT} "
+                             "(published to the host once the authentik phase runs) — "
+                             "the DOCKER-USER rule is what actually enforces this, "
+                             "since Docker's port publish bypasses UFW; the UFW rule "
+                             "is added alongside it purely so `ufw status` isn't silent "
+                             "about it")
+            else:
+                lines.append("DOCKER-USER: no backup host in config — you will be asked "
+                             "interactively (Enter to skip; PostgreSQL stays unpublished)")
         return lines
 
     def apply(self, ctx: PhaseContext) -> None:
@@ -124,6 +172,7 @@ class BasePhase(Phase):
         upgrade = bool((cfg.raw.get("base") or {}).get("apt_upgrade", False))
         disable_uu = not bool((cfg.raw.get("base") or {}).get("unattended_upgrades", False))
         mon_ips = self._monitor_ips(ctx)  # may prompt — before any node is touched
+        backup_ips = self._backup_ips(ctx)  # may prompt — before any node is touched
 
         hosts_block = "\n".join(f"{n.ip}  {n.name}" for n in cfg.nodes)
 
@@ -199,6 +248,12 @@ systemctl enable --now docker
             monitor_rule = "".join(
                 f" && ufw allow from {ip} to any port {self._monitor_ports(ctx)} "
                 f"proto tcp comment 'akropolis monitor'" for ip in mon_ips)
+            # UFW rule here is documentation only (see backup-fw.sh.j2 for why
+            # it doesn't actually gate Docker-published ports) but kept so
+            # `ufw status` reflects the same allow-list a human would expect.
+            backup_rule = "".join(
+                f" && ufw allow from {ip} to any port {BACKUP_PORT} "
+                f"proto tcp comment 'akropolis backup'" for ip in backup_ips)
             if cfg.topology == "ha":
                 allow_from = " && ".join(f"ufw allow from {n.ip} to any" for n in cfg.nodes)
                 script = (
@@ -210,17 +265,44 @@ systemctl enable --now docker
                 script = (
                     "ufw default deny incoming && ufw default allow outgoing && "
                     "ufw allow ssh && ufw allow 80/tcp && ufw allow 443/tcp"
-                    f"{monitor_rule} && ufw --force enable"
+                    f"{monitor_rule}{backup_rule} && ufw --force enable"
                 )
             r = conn.run(script, timeout=120)
             ctx.record(node, "ufw rules + enable"
-                       + (f" (+ monitor {', '.join(mon_ips)})" if mon_ips else ""),
+                       + (f" (+ monitor {', '.join(mon_ips)})" if mon_ips else "")
+                       + (f" (+ backup {', '.join(backup_ips)})" if backup_ips else ""),
                        r.ok, r.err if not r.ok else "")
+
+            # DOCKER-USER firewall for PostgreSQL's published port (single
+            # only) — the rule that actually enforces backup_ips, since
+            # Docker's DNAT for a published port bypasses UFW's own chains.
+            # Pushed and (re-)run every apply, even with an empty backup_ips,
+            # so disabling backup.ips in config cleans up any prior rules
+            # instead of leaving them behind. Installed as a systemd unit
+            # (not just run once here) so it also re-applies after a reboot,
+            # when Docker recreates DOCKER-USER from scratch.
+            if cfg.topology == "single":
+                fw_script = render("backup-fw.sh.j2", backup_ips=backup_ips,
+                                   backup_port=BACKUP_PORT)
+                unit = resources.files("akropolis.templates") \
+                    .joinpath("akropolis-backup-fw.service").read_text()
+                conn.run("mkdir -p /opt/akropolis")
+                c1 = push_file(conn, fw_script, "/opt/akropolis/backup-fw.sh", mode="0700")
+                c2 = push_file(conn, unit, "/etc/systemd/system/akropolis-backup-fw.service")
+                r = conn.run("systemctl daemon-reload && "
+                             "systemctl enable akropolis-backup-fw && "
+                             "systemctl restart akropolis-backup-fw")
+                ctx.record(node, "DOCKER-USER backup firewall"
+                           + (f" (allow {', '.join(backup_ips)})" if backup_ips else " (none configured)"),
+                           r.ok, r.err if not r.ok else
+                           (("changed" if (c1 or c2) else "unchanged")))
 
     def verify(self, ctx: PhaseContext) -> bool:
         ok = True
         disable_uu = not bool((ctx.cfg.raw.get("base") or {}).get("unattended_upgrades", False))
         mon_ips = resolved_monitor_ips(ctx.cfg.raw, ctx.state.data["generated"])
+        backup_ips = (resolved_backup_ips(ctx.cfg.raw, ctx.state.data["generated"])
+                     if ctx.cfg.topology == "single" else [])
         for conn in ctx.fleet:
             node = conn.node.name
             checks = [
@@ -233,6 +315,14 @@ systemctl enable --now docker
                 *([("unattended-upgrades masked",
                     "systemctl is-enabled unattended-upgrades.service 2>&1 | "
                     "grep -q masked")] if disable_uu else []),
+                *([("akropolis-backup-fw active",
+                    "systemctl is-active akropolis-backup-fw >/dev/null")]
+                  if ctx.cfg.topology == "single" else []),
+                *[(f"backup ip {ip} in ufw", f"ufw status | grep -qF {ip}")
+                  for ip in backup_ips],
+                *[(f"backup ip {ip} in DOCKER-USER",
+                   f"iptables -S DOCKER-USER 2>/dev/null | grep -qF {ip}")
+                  for ip in backup_ips],
             ]
             for label, cmd in checks:
                 r = conn.run(cmd)

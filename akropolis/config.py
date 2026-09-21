@@ -170,6 +170,24 @@ def resolved_monitor_ips(raw: dict, generated: dict) -> list[str]:
     return []
 
 
+def backup_ips_from_raw(raw: dict) -> list[str]:
+    """backup.ips from a site config's raw dict, blank entries dropped."""
+    b = raw.get("backup") or {}
+    return [str(v).strip() for v in (b.get("ips") or []) if str(v).strip()]
+
+
+def resolved_backup_ips(raw: dict, generated: dict) -> list[str]:
+    """backup_ips_from_raw(), falling back to whatever a previous run already
+    pinned in state (generated.backup_ips) when the config itself carries no
+    backup IPs."""
+    ips = backup_ips_from_raw(raw)
+    if ips:
+        return ips
+    if generated.get("backup_ips"):
+        return list(generated["backup_ips"])
+    return []
+
+
 def load(path: str | Path) -> SiteConfig:
     path = Path(path)
     if not path.exists():
@@ -357,6 +375,35 @@ def load(path: str | Path) -> SiteConfig:
                 problems.append(f"monitor.ips: invalid IP/CIDR: {entry!r}")
             elif entry in seen_ips:
                 problems.append(f"monitor.ips entry {entry} collides with a node IP — "
+                                "node IPs are already fully allowed through UFW")
+
+    # --- backup (optional, single-node only) ---
+    # `backup.ips`: IP/CIDR allowed straight through to PostgreSQL's 5432 for
+    # a remote pg_dump/pg_basebackup. Off by default: the single-node compose
+    # file keeps the port unpublished unless this is set (see
+    # authentik-single-compose.yml.j2 / base_setup.py). Docker's own
+    # port-publish DNAT bypasses UFW entirely, so the IP restriction is
+    # actually enforced in the DOCKER-USER iptables chain (base_setup.py) —
+    # the UFW rule for the same IPs is added purely so `ufw status` isn't
+    # misleadingly silent about it. HA already fronts PostgreSQL with
+    # Patroni/HAProxy inside the cluster network and has no equivalent
+    # direct-to-5432 host path, so this is refused there rather than
+    # silently doing nothing.
+    backup_ips_raw = _get(raw, "backup.ips", []) or []
+    if not isinstance(backup_ips_raw, list):
+        problems.append("backup.ips must be a list of IP/CIDR strings")
+    elif backup_ips_raw and topology != "single":
+        problems.append("backup.ips is only supported for site.topology: single "
+                        "(HA's PostgreSQL has no direct-to-host path to publish)")
+    else:
+        for entry in backup_ips_raw:
+            entry = str(entry).strip()
+            if not entry:
+                continue
+            if not is_valid_ip_or_cidr(entry):
+                problems.append(f"backup.ips: invalid IP/CIDR: {entry!r}")
+            elif entry in seen_ips:
+                problems.append(f"backup.ips entry {entry} collides with a node IP — "
                                 "node IPs are already fully allowed through UFW")
 
     if problems:

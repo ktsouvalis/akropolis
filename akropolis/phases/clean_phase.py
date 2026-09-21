@@ -109,6 +109,14 @@ STEPS_SINGLE: list[tuple[str, str]] = [
      "systemctl daemon-reload; true"),
     ("TLS material removed",
      "rm -rf /etc/letsencrypt /var/www/certbot; true"),
+    # DOCKER-USER rules live outside anything `ufw reset` touches (that chain
+    # is Docker's, not UFW's) — cleaned up by hand before Docker itself might
+    # get reinstalled/restarted by a later provision on the same host.
+    ("akropolis-backup-fw removed (DOCKER-USER rules cleaned up)",
+     "systemctl disable --now akropolis-backup-fw 2>/dev/null; "
+     "/opt/akropolis/backup-fw.sh 2>/dev/null; "
+     "rm -f /etc/systemd/system/akropolis-backup-fw.service /opt/akropolis/backup-fw.sh; "
+     "rmdir /opt/akropolis 2>/dev/null; systemctl daemon-reload; true"),
     ("ufw reset (ssh re-allowed, left enabled)",
      "ufw --force reset && ufw default deny incoming && "
      "ufw default allow outgoing && ufw allow ssh && ufw --force enable"),
@@ -142,6 +150,10 @@ GONE_SINGLE = [
      "test -z \"$(docker ps -aq 2>/dev/null --filter name='authentik')\""),
     ("nginx config removed", "test ! -e /etc/nginx/sites-enabled/akropolis.conf"),
     ("nginx inactive", "! systemctl is-active --quiet nginx"),
+    ("akropolis-backup-fw unit removed",
+     "test ! -e /etc/systemd/system/akropolis-backup-fw.service"),
+    ("no akropolis-backup DOCKER-USER rules",
+     "! iptables -S DOCKER-USER 2>/dev/null | grep -q -- '--comment akropolis-backup'"),
 ]
 
 
@@ -164,7 +176,9 @@ class CleanPhase(Phase):
                 "bare-metal nginx (disabled, config/certs/webroots removed) → "
                 "authentik + its containerized postgres (one compose project, "
                 "docker compose down -v drops the named volume too) → TLS material "
-                "→ UFW reset (ssh kept) → /etc/hosts block → /tmp dump leftovers")
+                "→ akropolis-backup-fw unit + DOCKER-USER rules removed (if backup.ips "
+                "was ever configured) → UFW reset (ssh kept) → /etc/hosts block → "
+                "/tmp dump leftovers")
         lines.append(
             "packages (docker, postgresql-16" + (", keepalived, certbot" if cfg.topology == "ha"
             else ", nginx, certbot") + ") and the hostname are left alone — data and "

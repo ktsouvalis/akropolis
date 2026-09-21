@@ -1,0 +1,12 @@
+[Unit]
+Description=akropolis: restrict PostgreSQL's published port to the configured backup host(s)
+Requires=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/opt/akropolis/backup-fw.sh
+
+[Install]
+WantedBy=multi-user.target

@@ -188,6 +188,15 @@ def run_wizard(output: str | None = None) -> Path:
     monitor_ips = [] if monitor_ips_raw == "-" else \
         [e.strip() for e in monitor_ips_raw.split(",") if e.strip()]
 
+    backup_ips: list[str] = []
+    if topology == "single":
+        backup_ips_raw = _ask(
+            "backup host IP(s)/CIDR(s), comma-separated (published PostgreSQL "
+            "5432/tcp restricted to these; Enter to skip, keeps it unpublished)",
+            default="-", validate=lambda v: None if v == "-" else _valid_ip_or_cidr_list(v))
+        backup_ips = [] if backup_ips_raw == "-" else \
+            [e.strip() for e in backup_ips_raw.split(",") if e.strip()]
+
     cfg = {
         "site": {"name": site, "environment": env, "topology": topology,
                  "config_version": CONFIG_SCHEMA_VERSION},
@@ -215,6 +224,7 @@ def run_wizard(output: str | None = None) -> Path:
         "secrets": {"source": "prompt"},
         "monitor": {"emit": True, "output": f"./config.{site}.monitor.yml",
                     **({"ips": monitor_ips} if monitor_ips else {})},
+        **({"backup": {"ips": backup_ips}} if backup_ips else {}),
     }
 
     out = Path(output or f"config.{site}.yml")
