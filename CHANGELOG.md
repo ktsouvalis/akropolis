@@ -11,6 +11,15 @@ dead ends.
 
 ## [Unreleased]
 
+## [2.6.0] - 2026-09-21
+
+### Added
+
+- `akropolis status CONFIG`: phase-by-phase provisioning status (`done` /
+  `failed` / `declined` / `skipped` / `pending`, with timestamp and recorded
+  error) plus which phase runs next. Reads only the state file — no SSH, no
+  prompts — so it's safe to check on a site left stopped mid-run.
+
 ## [2.5.0] - 2026-09-21
 
 ### Added

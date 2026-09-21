@@ -160,6 +160,10 @@ akropolis provision CONFIG          run the phase pipeline against a site (resum
   --only PHASE [PHASE...]              run only the named phase(s), e.g. --only preflight
   --replay PHASE [PHASE...]            re-run specific completed phase(s)
 
+akropolis status CONFIG             phase-by-phase status: which phases are done,
+                                       failed, or still pending (reads the state
+                                       file only — no SSH, no prompts)
+
 akropolis shutdown CONFIG           gracefully stop the authentik server+worker
                                        (ha: on all 3 nodes, other services left running;
                                         single: postgresql left running)
@@ -230,6 +234,8 @@ Every phase runs **plan → confirm → apply → verify**:
 - **verify** is a health gate. A phase that applies but fails verify is marked `failed` and **the runner stops**; it never builds on an unhealthy foundation.
 
 Progress is recorded in a per-site state file (see below), so a re-run skips completed phases and resumes at the frontier. `--replay PHASE` marks exactly the named phases pending (everything else keeps its done-skip) and is designed to be a no-op or an explicit, detected change, never a re-bootstrap. Preflight is state-aware: on a mid-lifecycle run, ports, containers and the VIP owned by already-completed phases are expected (the VIP check even inverts once nginx-keepalived is done: answering becomes the healthy state), and residual findings like a low-disk reading or the artifacts of a phase being replayed degrade to warnings. A virgin host gets the full strict treatment.
+
+`akropolis status CONFIG` prints exactly what's in that state file, phase by phase — `done`/`failed`/`declined`/`skipped`/`pending`, with the timestamp and (for `failed`) the recorded error, plus which phase runs next. It only reads the state file, so it never touches SSH or prompts and is safe to run against a site mid-failure, e.g. a single-node run left stopped partway through so its certs and DB restore can be replayed once the primary is confirmed dead.
 
 ## Configuration file
 

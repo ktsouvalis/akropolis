@@ -3,6 +3,7 @@
     akropolis init                      # interactive wizard → config.<site>.yml
     akropolis provision config.yml      # phase runner (resumable)
     akropolis provision config.yml --replay preflight
+    akropolis status    config.yml      # phase-by-phase status (state file only, no SSH)
     akropolis shutdown  config.yml      # gracefully stop the authentik backend(s)
     akropolis start      config.yml     # bring them back — requires a prior shutdown
     akropolis clean     config.yml      # tear the site down to bare VMs
@@ -25,6 +26,7 @@ from pathlib import Path
 
 from rich.console import Console
 from rich.markdown import Markdown
+from rich.table import Table
 
 from . import __version__
 from . import changelog
@@ -193,6 +195,76 @@ def cmd_provision(args: argparse.Namespace) -> int:
         fleet.close()
         transcript.close()
     return 0 if ok else 1
+
+
+_STATUS_ICON = {
+    "done": "[green]✔ done[/green]",
+    "failed": "[red]✘ failed[/red]",
+    "declined": "[yellow]⦸ declined[/yellow]",
+    "skipped": "[yellow]⦸ skipped[/yellow]",
+    "pending": "[dim]… pending[/dim]",
+}
+
+
+def phase_rows(pipeline: list, state: State) -> list[dict]:
+    """One row per pipeline phase, in run order, merging in whatever `state`
+    recorded for it. A phase absent from state.json is "pending" — it has
+    never been attempted. Only "done" is skipped by the next `provision`;
+    every other status (including "failed"/"declined"/"skipped") re-runs.
+    """
+    rows = []
+    for phase in pipeline:
+        entry = state.data["phases"].get(phase.name, {})
+        rows.append({
+            "name": phase.name,
+            "status": entry.get("status", "pending"),
+            "updated_at": entry.get("updated_at", ""),
+            "error": entry.get("error", ""),
+            "optional": phase.optional,
+        })
+    return rows
+
+
+def cmd_status(args: argparse.Namespace) -> int:
+    try:
+        cfg = load(args.config)
+    except ConfigError as exc:
+        console.print("[red]config problems:[/red]")
+        for p in exc.problems:
+            console.print(f"  ✘ {p}")
+        return 2
+
+    state = State(cfg.state_file, cfg.name)
+    rows = phase_rows(pipeline_for(cfg.topology), state)
+
+    console.print(f"[bold]{cfg.name}[/bold] [dim]({cfg.topology}, {cfg.environment})[/dim]")
+    if cfg.state_file.exists():
+        console.print(f"state file: {cfg.state_file}")
+    else:
+        console.print(f"state file: {cfg.state_file} "
+                       "[dim](doesn't exist yet — nothing provisioned)[/dim]")
+    console.print()
+
+    table = Table(box=None, pad_edge=False)
+    table.add_column("phase")
+    table.add_column("status")
+    table.add_column("updated")
+    table.add_column("detail")
+    for row in rows:
+        name = row["name"] + (" [dim](optional)[/dim]" if row["optional"] else "")
+        table.add_row(name, _STATUS_ICON.get(row["status"], row["status"]),
+                      row["updated_at"], row["error"])
+    console.print(table)
+
+    remaining = [r for r in rows if r["status"] != "done"]
+    console.print()
+    if remaining:
+        nxt = remaining[0]
+        console.print(f"next up: [bold]{nxt['name']}[/bold] (currently {nxt['status']}) "
+                       "— runs on the next `provision`")
+    else:
+        console.print("[green]all phases done.[/green]")
+    return 0
 
 
 def _lifecycle_cmd(args: argparse.Namespace, phase, command: str) -> int:
@@ -417,6 +489,11 @@ def main(argv: list[str] | None = None) -> int:
     p_prov.add_argument("--only", nargs="+", metavar="PHASE",
                         help="run only the named phase(s), e.g. --only preflight")
     p_prov.set_defaults(func=cmd_provision)
+
+    p_status = sub.add_parser("status", help="phase-by-phase provisioning status for "
+                              "a site (reads the state file only — no SSH, no prompts)")
+    p_status.add_argument("config", help="path to config.<site>.yml")
+    p_status.set_defaults(func=cmd_status)
 
     p_shutdown = sub.add_parser("shutdown", help="gracefully stop the authentik "
                                 "server+worker (ha: on all 3 nodes, other services "
