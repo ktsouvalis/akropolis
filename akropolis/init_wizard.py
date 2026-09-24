@@ -168,7 +168,8 @@ def run_wizard(output: str | None = None) -> Path:
     # node and derives the bind-mounts, so the operator never has to keep a
     # volume list and a set of copied files in sync by hand.
     branding = {}
-    for key, label in (("logo", "logo (png)"), ("background", "background image")):
+    for key, label in (("logo", "logo (png)"), ("favicon", "favicon (png/ico)"),
+                       ("background", "background image")):
         path = input(f"path to custom {label} on this machine (Enter to skip): ").strip()
         if path:
             if not Path(path).expanduser().exists():

@@ -288,7 +288,7 @@ class AuthentikPhase(Phase):
     # the mounts, keeping the two in sync by construction.
     #
     # Asset paths mirror the production compose:
-    #   /web/dist/assets/icons/<name>   ← logo
+    #   /web/dist/assets/icons/<name>   ← logo, favicon
     #   /web/dist/assets/images/<name>  ← background
     def _branding_volumes(self, ctx: PhaseContext) -> list[str]:
         b = self._acfg(ctx).get("branding") or {}
@@ -401,7 +401,7 @@ class AuthentikPhase(Phase):
                          "(covers image pull + database migrations, up to 15 min), "
                          "then the other nodes one at a time")
         b = self._acfg(ctx).get("branding") or {}
-        named = [k for k in ("logo", "background") if b.get(k)]
+        named = [k for k in BRAND_FIELDS if b.get(k)]
         if named:
             lines.append(f"branding: upload {', '.join(named)} to every node under "
                          "/opt/authentik/branding/, bind-mount over "

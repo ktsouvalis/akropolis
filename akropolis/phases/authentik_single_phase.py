@@ -211,7 +211,7 @@ class AuthentikSinglePhase(Phase):
             lines.append("SMTP email: not in site config — you will be asked interactively "
                          "(answers pinned in state, password via hidden prompt)")
         b = acfg.get("branding") or {}
-        named = [k for k in ("logo", "background") if b.get(k)]
+        named = [k for k in BRAND_FIELDS if b.get(k)]
         if named:
             lines.append(f"branding: upload {', '.join(named)}, bind-mount over "
                          "/web/dist/assets/{icons,images}/, AND point the default brand "

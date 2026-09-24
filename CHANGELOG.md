@@ -11,6 +11,18 @@ dead ends.
 
 ## [Unreleased]
 
+## [2.6.1] - 2026-09-24
+
+### Added
+
+- `akropolis init` now also asks for a favicon, between the logo and the
+  background prompts. The deploy side already supported
+  `authentik.branding.favicon` (uploaded to
+  `/opt/authentik/branding/icons/<name>`, bind-mounted at
+  `/web/dist/assets/icons/<name>`, and set as the default brand's
+  `branding_favicon`), but the wizard never offered it, and the authentik
+  phases' plan preview listed only logo and background.
+
 ## [2.6.0] - 2026-09-21
 
 ### Added
