@@ -189,14 +189,21 @@ def run_wizard(output: str | None = None) -> Path:
     monitor_ips = [] if monitor_ips_raw == "-" else \
         [e.strip() for e in monitor_ips_raw.split(",") if e.strip()]
 
-    backup_ips: list[str] = []
+    # none / localhost / remote — mutually exclusive (a remote publish binds
+    # every interface, loopback included). Written out explicitly either way,
+    # so `provision` never re-asks what was already answered here.
+    backup: dict = {}
     if topology == "single":
-        backup_ips_raw = _ask(
-            "backup host IP(s)/CIDR(s), comma-separated (published PostgreSQL "
-            "5432/tcp restricted to these; Enter to skip, keeps it unpublished)",
-            default="-", validate=lambda v: None if v == "-" else _valid_ip_or_cidr_list(v))
-        backup_ips = [] if backup_ips_raw == "-" else \
-            [e.strip() for e in backup_ips_raw.split(",") if e.strip()]
+        mode = _ask_choice("publish PostgreSQL 5432/tcp for backup tooling? "
+                           "no / localhost (127.0.0.1 only, reach it over an SSH tunnel) "
+                           "/ remote (restricted to backup host IPs)",
+                           ["no", "localhost", "remote"], "no")
+        if mode == "remote":
+            backup_ips_raw = _ask("backup host IP(s)/CIDR(s), comma-separated",
+                                  validate=_valid_ip_or_cidr_list)
+            backup = {"ips": [e.strip() for e in backup_ips_raw.split(",") if e.strip()]}
+        else:
+            backup = {"localhost": mode == "localhost"}
 
     cfg = {
         "site": {"name": site, "environment": env, "topology": topology,
@@ -225,7 +232,7 @@ def run_wizard(output: str | None = None) -> Path:
         "secrets": {"source": "prompt"},
         "monitor": {"emit": True, "output": f"./config.{site}.monitor.yml",
                     **({"ips": monitor_ips} if monitor_ips else {})},
-        **({"backup": {"ips": backup_ips}} if backup_ips else {}),
+        **({"backup": backup} if backup else {}),
     }
 
     out = Path(output or f"config.{site}.yml")

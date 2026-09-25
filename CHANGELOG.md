@@ -11,6 +11,27 @@ dead ends.
 
 ## [Unreleased]
 
+## [2.7.0] - 2026-09-25
+
+### Added
+
+- Single-node topology: new `backup.localhost` config key publishes
+  PostgreSQL on `127.0.0.1:5432` only, for backup tooling that reaches the
+  node over an SSH tunnel (or runs on the node itself). Loopback is
+  unreachable off-host, so no UFW or `DOCKER-USER` rule is involved.
+  Mutually exclusive with `backup.ips` (that publish already binds every
+  interface, loopback included); refused on `site.topology: ha`.
+
+### Changed
+
+- The interactive backup question (`base` phase and `akropolis init`) is now
+  a three-way choice — no / localhost only / remote (then the backup host
+  IPs) — instead of an IP prompt where Enter meant "unpublished". `init`
+  writes the answer out explicitly (`backup.localhost: false` for "no"), so
+  `provision` doesn't ask it again. An existing site whose state already
+  pinned an answer to the old question is not re-asked; set
+  `backup.localhost: true` in its config to switch it to loopback.
+
 ## [2.6.1] - 2026-09-24
 
 ### Added

@@ -176,16 +176,46 @@ def backup_ips_from_raw(raw: dict) -> list[str]:
     return [str(v).strip() for v in (b.get("ips") or []) if str(v).strip()]
 
 
+def backup_localhost_from_raw(raw: dict) -> bool | None:
+    """backup.localhost from a site config's raw dict; None when unset."""
+    v = (raw.get("backup") or {}).get("localhost")
+    return None if v is None else bool(v)
+
+
+def backup_answered_in_config(raw: dict) -> bool:
+    """True when the site config itself settles how PostgreSQL is published
+    (any backup.ips, or an explicit backup.localhost), so nothing is asked."""
+    return bool(backup_ips_from_raw(raw)) or backup_localhost_from_raw(raw) is not None
+
+
 def resolved_backup_ips(raw: dict, generated: dict) -> list[str]:
     """backup_ips_from_raw(), falling back to whatever a previous run already
     pinned in state (generated.backup_ips) when the config itself carries no
-    backup IPs."""
+    backup IPs. backup.localhost: true in config wins over a pinned remote
+    answer — the two are mutually exclusive."""
     ips = backup_ips_from_raw(raw)
     if ips:
         return ips
+    if backup_localhost_from_raw(raw):
+        return []
     if generated.get("backup_ips"):
         return list(generated["backup_ips"])
     return []
+
+
+def resolved_backup_localhost(raw: dict, generated: dict) -> bool:
+    """Whether PostgreSQL is published on 127.0.0.1 only: backup.localhost
+    from the config, else a previous run's pinned answer
+    (generated.backup_localhost). Always False once backup IPs resolve —
+    the remote publish (all interfaces) already covers loopback."""
+    if backup_ips_from_raw(raw):
+        return False
+    v = backup_localhost_from_raw(raw)
+    if v is not None:
+        return v
+    if generated.get("backup_ips"):
+        return False
+    return bool(generated.get("backup_localhost", False))
 
 
 def load(path: str | Path) -> SiteConfig:
@@ -405,6 +435,24 @@ def load(path: str | Path) -> SiteConfig:
             elif entry in seen_ips:
                 problems.append(f"backup.ips entry {entry} collides with a node IP — "
                                 "node IPs are already fully allowed through UFW")
+
+    # `backup.localhost: true`: publish 5432 on 127.0.0.1 only, for backup
+    # tooling that reaches the node over an SSH tunnel (or runs on the node
+    # itself). Loopback is unreachable off-host, so no UFW/DOCKER-USER rule
+    # is involved. Mutually exclusive with backup.ips: that publish binds
+    # every interface, loopback included, so both at once means nothing.
+    backup_localhost_raw = _get(raw, "backup.localhost")
+    if backup_localhost_raw is not None:
+        if not isinstance(backup_localhost_raw, bool):
+            problems.append("backup.localhost must be true or false")
+        elif backup_localhost_raw and topology != "single":
+            problems.append("backup.localhost is only supported for site.topology: single "
+                            "(HA's PostgreSQL has no direct-to-host path to publish)")
+        elif backup_localhost_raw and isinstance(backup_ips_raw, list) and \
+                any(str(e).strip() for e in backup_ips_raw):
+            problems.append("backup.localhost and backup.ips are mutually exclusive — "
+                            "backup.ips already publishes on every interface, "
+                            "loopback included; pick one")
 
     if problems:
         raise ConfigError(problems)

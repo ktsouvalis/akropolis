@@ -286,19 +286,27 @@ monitor:
 # ---------------------------------------------------------------------------
 # Backup (optional, single-node topology only)
 # ---------------------------------------------------------------------------
+# How PostgreSQL's 5432/tcp is published for backup tooling — pick ONE of
+# `localhost` or `ips` (both at once is refused: the remote publish already
+# binds every interface, loopback included). Neither set → asked
+# interactively at apply time (no / localhost / remote; the answer is pinned
+# in state). Refused outright on topology: ha.
 # backup:
+#   localhost: true                # publish on 127.0.0.1:5432 ONLY — for backup tooling
+                                    # that reaches the node over an SSH tunnel (or runs
+                                    # on the node itself). Loopback is unreachable
+                                    # off-host, so no UFW/DOCKER-USER rule is involved.
+                                    # `false` = leave PostgreSQL unpublished (and don't
+                                    # ask).
 #   ips:                           # any number of backup-tool hosts and/or CIDR ranges
 #     - 10.0.0.90
 #     - 203.0.113.0/29
                                     # Publishes PostgreSQL's 5432/tcp to the host for a
                                     # remote pg_dump/pg_basebackup, and restricts it to
-                                    # exactly these IP(s)/CIDR(s). Omit → asked
-                                    # interactively at apply time (Enter to skip; the
-                                    # answer is pinned in state, same pattern as
-                                    # monitor.ips). Refused outright on topology: ha —
+                                    # exactly these IP(s)/CIDR(s). (Refused on HA:
                                     # PostgreSQL there has no direct-to-host path to
-                                    # publish (it's fronted by Patroni/HAProxy inside the
-                                    # cluster network instead).
+                                    # publish — it's fronted by Patroni/HAProxy inside the
+                                    # cluster network instead.)
                                     # IMPORTANT: Docker's own port-publish bypasses UFW
                                     # entirely, so the actual restriction is enforced in
                                     # the DOCKER-USER iptables chain (base phase installs

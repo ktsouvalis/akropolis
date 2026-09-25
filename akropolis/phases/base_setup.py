@@ -17,7 +17,9 @@ from __future__ import annotations
 
 from importlib import resources
 
-from ..config import is_valid_ip_or_cidr, resolved_backup_ips, resolved_monitor_ips
+from ..config import (backup_answered_in_config, is_valid_ip_or_cidr,
+                      resolved_backup_ips, resolved_backup_localhost,
+                      resolved_monitor_ips)
 from ..remote import push_file, render
 from .base import Phase, PhaseContext
 
@@ -37,10 +39,12 @@ MONITOR_PORTS_HA = "2379,5000,5001,8008,8080,9000,9443"
 # is inside nginx, but UFW drops the packet first if this rule is missing.
 MONITOR_PORTS_SINGLE = "8080"
 
-# single only: PostgreSQL's published port, for a remote pg_dump/pg_basebackup
-# (site config: backup.ips — see config.py, authentik-single-compose.yml.j2,
-# and the DOCKER-USER firewall handling below). Unpublished, and this whole
-# code path a no-op, unless backup.ips is set.
+# single only: PostgreSQL's published port, for backup tooling. Either
+# remote (site config: backup.ips — published on every interface, restricted
+# by the DOCKER-USER firewall handling below) or loopback only
+# (backup.localhost — 127.0.0.1, for an SSH tunnel; no firewall involved).
+# See config.py and authentik-single-compose.yml.j2. Unpublished, and the
+# DOCKER-USER code path a no-op, unless backup.ips is set.
 BACKUP_PORT = "5432"
 
 PACKAGES = ("curl wget gnupg2 ca-certificates lsb-release "
@@ -86,32 +90,55 @@ class BasePhase(Phase):
 
         return ctx.state.get_or_generate("monitor_ips", ask)
 
-    # ------------------------------------------------------------- backup ip
-    # Same resolution order as monitor ips (config → prompt, pinned in
-    # state). Single-node only — config.py refuses backup.ips on HA.
-    def _backup_ips(self, ctx: PhaseContext) -> list[str]:
-        if ctx.cfg.topology != "single":
-            return []
+    # ------------------------------------------------------------- backup
+    # How PostgreSQL's 5432 is published: none / localhost (127.0.0.1 only)
+    # / remote (backup.ips). Same resolution order as monitor ips (config →
+    # prompt, pinned in state); the prompt pins both backup_ips and
+    # backup_localhost together. A pre-2.7 state with only backup_ips pinned
+    # counts as answered (localhost was not an option then) — set
+    # backup.localhost in the config to change it. Single-node only —
+    # config.py refuses both keys on HA.
+    def _backup_answered(self, ctx: PhaseContext) -> bool:
         gen = ctx.state.data["generated"]
-        ips = resolved_backup_ips(ctx.cfg.raw, gen)
-        if ips or "backup_ips" in gen:
-            return ips  # config had none, but a prior run already pinned an (possibly empty) answer
+        return (backup_answered_in_config(ctx.cfg.raw)
+                or "backup_ips" in gen or "backup_localhost" in gen)
 
-        def ask() -> list[str]:
+    def _backup_publish(self, ctx: PhaseContext) -> tuple[list[str], bool]:
+        if ctx.cfg.topology != "single":
+            return [], False
+        gen = ctx.state.data["generated"]
+        if self._backup_answered(ctx):
+            return (resolved_backup_ips(ctx.cfg.raw, gen),
+                    resolved_backup_localhost(ctx.cfg.raw, gen))
+
+        def ask_mode() -> str:
+            while True:
+                v = input(f"publish PostgreSQL ({BACKUP_PORT}/tcp) for backup tooling? "
+                          "[n]o / [l]ocalhost only (127.0.0.1 — reach it over an SSH "
+                          "tunnel) / [r]emote (restricted to backup host IPs) [n]: "
+                          ).strip().lower() or "n"
+                if v in ("n", "l", "r"):
+                    return v
+                print("  answer n, l or r")
+
+        def ask_ips() -> list[str]:
             while True:
                 v = input("backup host IP(s)/CIDR(s) to allow straight through to "
-                          f"PostgreSQL ({BACKUP_PORT}/tcp; comma-separated, Enter to "
-                          "skip — leaves PostgreSQL unpublished): ").strip()
-                if not v:
-                    return []
+                          f"PostgreSQL ({BACKUP_PORT}/tcp; comma-separated): ").strip()
                 entries = [e.strip() for e in v.split(",") if e.strip()]
+                if not entries:
+                    print("  at least one IP or CIDR is required for a remote publish")
+                    continue
                 bad = [e for e in entries if not is_valid_ip_or_cidr(e)]
                 if bad:
                     print(f"  not a valid IP or CIDR: {', '.join(bad)}")
                     continue
                 return entries
 
-        return ctx.state.get_or_generate("backup_ips", ask)
+        mode = ask_mode()
+        ips = ask_ips() if mode == "r" else []
+        return (ctx.state.get_or_generate("backup_ips", lambda: ips),
+                ctx.state.get_or_generate("backup_localhost", lambda: mode == "l"))
 
     def plan(self, ctx: PhaseContext) -> list[str]:
         cfg = ctx.cfg
@@ -153,7 +180,8 @@ class BasePhase(Phase):
                     "UFW: no monitor host in config — you will be asked interactively "
                     "(Enter to skip; the answer is pinned in state)")
         if cfg.topology == "single":
-            backup_ips = resolved_backup_ips(cfg.raw, ctx.state.data["generated"])
+            gen = ctx.state.data["generated"]
+            backup_ips = resolved_backup_ips(cfg.raw, gen)
             if backup_ips:
                 lines.append(f"UFW + DOCKER-USER: allow backup host(s) "
                              f"{', '.join(backup_ips)} to PostgreSQL's {BACKUP_PORT} "
@@ -162,9 +190,16 @@ class BasePhase(Phase):
                              "since Docker's port publish bypasses UFW; the UFW rule "
                              "is added alongside it purely so `ufw status` isn't silent "
                              "about it")
+            elif not self._backup_answered(ctx):
+                lines.append("PostgreSQL publish not in config — you will be asked "
+                             "interactively: no / localhost only (127.0.0.1) / remote "
+                             "(backup host IPs); the answer is pinned in state")
+            elif resolved_backup_localhost(cfg.raw, gen):
+                lines.append(f"PostgreSQL's {BACKUP_PORT} published on 127.0.0.1 only "
+                             "(once the authentik phase runs) — loopback is unreachable "
+                             "off-host, so no UFW/DOCKER-USER rule; DOCKER-USER stays empty")
             else:
-                lines.append("DOCKER-USER: no backup host in config — you will be asked "
-                             "interactively (Enter to skip; PostgreSQL stays unpublished)")
+                lines.append("PostgreSQL stays unpublished; DOCKER-USER stays empty")
         return lines
 
     def apply(self, ctx: PhaseContext) -> None:
@@ -172,7 +207,7 @@ class BasePhase(Phase):
         upgrade = bool((cfg.raw.get("base") or {}).get("apt_upgrade", False))
         disable_uu = not bool((cfg.raw.get("base") or {}).get("unattended_upgrades", False))
         mon_ips = self._monitor_ips(ctx)  # may prompt — before any node is touched
-        backup_ips = self._backup_ips(ctx)  # may prompt — before any node is touched
+        backup_ips, _ = self._backup_publish(ctx)  # may prompt — before any node is touched
 
         hosts_block = "\n".join(f"{n.ip}  {n.name}" for n in cfg.nodes)
 

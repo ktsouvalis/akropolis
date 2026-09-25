@@ -441,9 +441,13 @@ it to `single` changes the shape of the pipeline, not just its size:
 - **No VIP, no keepalived**: nothing to fail over to. `network.vip` is
   neither required nor validated.
 - **No etcd, no Patroni, no HAProxy**: PostgreSQL runs as a plain
-  `postgres:16-alpine` container (loopback-only `127.0.0.1:5432`, same
-  "always local, never a remote IP" reasoning as an HA node's `127.0.0.1:5000`
-  HAProxy connection) instead of a bare-metal Patroni-managed instance.
+  `postgres:16-alpine` container instead of a bare-metal Patroni-managed
+  instance, reached by server/worker over Docker's own network and not
+  published to the host by default. For backup tooling, `backup.localhost:
+  true` publishes it on `127.0.0.1:5432` only (reach it over an SSH tunnel),
+  or `backup.ips` publishes it for specific remote hosts (enforced in the
+  `DOCKER-USER` iptables chain, since Docker's publish bypasses UFW). Pick
+  one; unset, you're asked at `provision` time.
 - **nginx, but bare-metal, not containerized.** A single node still gets its
   own reverse proxy in front — terminating public TLS and serving the same
   bilingual maintenance page HA uses whenever authentik is unreachable — but

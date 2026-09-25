@@ -470,6 +470,64 @@ def test_backup_ips_refused_on_ha(write_config):
         load(path)
 
 
+def test_backup_localhost_accepted_on_single(write_config):
+    path = write_config(SINGLE_BASE, {"backup": {"localhost": True}})
+    cfg = load(path)  # must not raise
+    assert config_mod.backup_localhost_from_raw(cfg.raw) is True
+
+
+def test_backup_localhost_must_be_bool(write_config):
+    path = write_config(SINGLE_BASE, {"backup": {"localhost": "yes"}})
+    with pytest.raises(ConfigError, match="backup.localhost must be true or false"):
+        load(path)
+
+
+def test_backup_localhost_and_ips_mutually_exclusive(write_config):
+    path = write_config(SINGLE_BASE, {"backup": {"localhost": True, "ips": ["10.0.1.5"]}})
+    with pytest.raises(ConfigError, match="mutually exclusive"):
+        load(path)
+
+
+def test_backup_localhost_false_with_ips_allowed(write_config):
+    path = write_config(SINGLE_BASE, {"backup": {"localhost": False, "ips": ["10.0.1.5"]}})
+    load(path)  # must not raise -- false is just "not localhost"
+
+
+def test_backup_localhost_refused_on_ha(write_config):
+    path = write_config(HA_BASE, {"backup": {"localhost": True}})
+    with pytest.raises(ConfigError, match="backup.localhost is only supported"):
+        load(path)
+
+
+def test_resolved_backup_localhost_from_config():
+    raw = {"backup": {"localhost": True}}
+    assert config_mod.resolved_backup_localhost(raw, {}) is True
+    # config wins over a pinned remote answer, and suppresses its IPs
+    gen = {"backup_ips": ["10.0.1.5"], "backup_localhost": False}
+    assert config_mod.resolved_backup_localhost(raw, gen) is True
+    assert config_mod.resolved_backup_ips(raw, gen) == []
+
+
+def test_resolved_backup_localhost_from_state():
+    assert config_mod.resolved_backup_localhost({}, {"backup_localhost": True}) is True
+    assert config_mod.resolved_backup_localhost({}, {}) is False
+    # pre-2.7 state: only backup_ips pinned
+    assert config_mod.resolved_backup_localhost({}, {"backup_ips": []}) is False
+
+
+def test_resolved_backup_localhost_false_when_ips_resolve():
+    assert config_mod.resolved_backup_localhost({"backup": {"ips": ["10.0.1.5"]}},
+                                                {"backup_localhost": True}) is False
+    assert config_mod.resolved_backup_localhost({}, {"backup_ips": ["10.0.1.5"],
+                                                     "backup_localhost": True}) is False
+
+
+def test_backup_answered_in_config():
+    assert not config_mod.backup_answered_in_config({})
+    assert config_mod.backup_answered_in_config({"backup": {"localhost": False}})
+    assert config_mod.backup_answered_in_config({"backup": {"ips": ["10.0.1.5"]}})
+
+
 # --- multiple problems reported together --------------------------------
 
 def test_multiple_problems_all_reported_together(write_config):

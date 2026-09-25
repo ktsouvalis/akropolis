@@ -10,6 +10,36 @@ when it was fixed.
 
 ---
 
+## Single-node PostgreSQL: the loopback publish comes back, as an opt-in (Sep 2026)
+
+"Single-node topology: network_mode: host wasn't needed at all" further
+down dropped PostgreSQL's `127.0.0.1:5432:5432` publish as attack surface
+with no reason to exist. That reasoning held for authentik's *own*
+server/worker, which reach it over Docker's network by service name. It
+didn't hold for backup tooling. An operator's real production site had
+the publish added back to `/opt/authentik/docker-compose.yml` by hand, for
+a backup system that reaches the node over an SSH tunnel. `backup.ips`
+(2.5.0) didn't fit that case: it publishes on every interface and fences
+it with `DOCKER-USER`, which is the wrong shape for traffic that only ever
+arrives on loopback.
+
+A hand edit to a rendered file lasts only until the next render. Any re-run
+of the `authentik` phase (`--replay`, a tag bump) overwrites the compose
+file in full, and the only sign is a "changed" in the transcript. So
+`backup.localhost: true` exists now, and the question is a three-way choice
+(no / localhost / remote) instead of "IPs, or Enter to skip".
+
+Default is still unpublished; the original reasoning stands for everyone
+who doesn't ask. localhost and remote are mutually exclusive rather than
+combinable, because the remote publish already binds loopback too: "both"
+would render the same file as "remote".
+
+Rule: when a production site carries a hand edit to a file akropolis
+renders, that is a missing config key, not a local quirk. Either the key
+gets added, or the edit is lost at the next re-render.
+
+---
+
 ## single-topology gets its own nginx — bare-metal, not containerized (Sep 2026)
 
 Supersedes "Single-node topology: no nginx after all: authentik serves TLS

@@ -52,7 +52,7 @@ import secrets as pysecrets
 import shlex
 from pathlib import Path
 
-from ..config import resolved_backup_ips
+from ..config import resolved_backup_ips, resolved_backup_localhost
 from ..remote import base_url, push_binary, push_file, render
 from .authentik_phase import (BRAND_FIELDS, apply_brand, dump_logs, pin_applied_tag,
                               tag_change_warning, wait_healthy)
@@ -171,9 +171,12 @@ class AuthentikSinglePhase(Phase):
         cfg = ctx.cfg
         acfg = self._acfg(ctx)
         backup_ips = resolved_backup_ips(cfg.raw, ctx.state.data["generated"])
+        pg_loopback = resolved_backup_localhost(cfg.raw, ctx.state.data["generated"])
         pg_publish = (f"published to the host ({BACKUP_PORT}/tcp, restricted to "
                       f"{', '.join(backup_ips)} — see the base phase's DOCKER-USER "
                       "firewall) for remote backup" if backup_ips else
+                      f"published on 127.0.0.1:{BACKUP_PORT} only, for backup over an "
+                      "SSH tunnel" if pg_loopback else
                       "no published port — reached via Docker's own DNS, service name "
                       "'postgresql'")
         lines = [
@@ -250,11 +253,14 @@ class AuthentikSinglePhase(Phase):
         # in it always refer to files that are already on the node
         branding = self._branding_volumes(ctx)
         backup_ips = resolved_backup_ips(cfg.raw, ctx.state.data["generated"])
+        pg_loopback = resolved_backup_localhost(cfg.raw, ctx.state.data["generated"])
         compose = render("authentik-single-compose.yml.j2",
                          extra_server_volumes=branding
                          + list(acfg.get("extra_server_volumes", []) or []),
                          extra_worker_volumes=list(acfg.get("extra_worker_volumes", []) or []),
-                         publish_pg_port=bool(backup_ips), pg_port=BACKUP_PORT)
+                         publish_pg_port=bool(backup_ips) or pg_loopback,
+                         pg_loopback=pg_loopback and not backup_ips,
+                         pg_port=BACKUP_PORT)
 
         unit = __import__("importlib").resources.files("akropolis.templates") \
             .joinpath("authentik-compose.service").read_text()
@@ -327,10 +333,17 @@ class AuthentikSinglePhase(Phase):
 
         pg_ok = True
         backup_ips = resolved_backup_ips(ctx.cfg.raw, ctx.state.data["generated"])
+        pg_loopback = resolved_backup_localhost(ctx.cfg.raw, ctx.state.data["generated"])
         if backup_ips:
             r3 = conn.run(f"ss -ltn | grep -qE ':{BACKUP_PORT}\\s'")
             pg_ok = r3.ok
             ctx.record(node, f"verify: PostgreSQL {BACKUP_PORT} published", pg_ok,
                        "" if pg_ok else "not listening — check the authentik-compose stack")
+        elif pg_loopback:
+            r3 = conn.run(f"ss -ltn | grep -qE '127\\.0\\.0\\.1:{BACKUP_PORT}\\s'")
+            pg_ok = r3.ok
+            ctx.record(node, f"verify: PostgreSQL 127.0.0.1:{BACKUP_PORT} published", pg_ok,
+                       "" if pg_ok else "not listening on loopback — check the "
+                       "authentik-compose stack")
 
         return good and ready and api and pg_ok

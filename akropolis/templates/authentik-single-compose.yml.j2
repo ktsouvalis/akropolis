@@ -19,12 +19,13 @@ services:
     # Reachable from server/worker purely via Docker's own compose-network
     # DNS (AUTHENTIK_POSTGRESQL__HOST: postgresql), matching the official
     # compose.yml at docs.goauthentik.io/compose.yml — no published port at
-    # all unless backup.ips is set in the site config (see base_setup.py's
-    # DOCKER-USER firewall handling: it, not this publish, is what actually
-    # restricts who can reach it).
+    # all unless the site config asks for one: backup.ips publishes on every
+    # interface (base_setup.py's DOCKER-USER firewall, not this publish, is
+    # what actually restricts who can reach it); backup.localhost publishes
+    # on 127.0.0.1 only, for an SSH tunnel — unreachable off-host as is.
 {% if publish_pg_port %}
     ports:
-      - "{{ pg_port }}:5432"
+      - "{% if pg_loopback %}127.0.0.1:{% endif %}{{ pg_port }}:5432"
 {% endif %}
 
   server:
