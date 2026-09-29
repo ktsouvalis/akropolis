@@ -214,6 +214,9 @@ authentik:
   # akropolis also points the DEFAULT brand at these via the API after startup
   # (/static/dist/assets/...), because mounting the file alone leaves the stock
   # logo showing; the brand record in the database is what selects the asset.
+  # The logo is also mounted in the worker over
+  # /web/dist/assets/icons/icon_left_brand.png, the file authentik attaches to
+  # every email it sends. That needs a PNG; any other format keeps the stock email logo.
   # branding:
   #   logo: ./branding/logo.png
   #   favicon: ./branding/favicon.png

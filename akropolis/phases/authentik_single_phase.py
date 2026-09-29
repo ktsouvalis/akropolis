@@ -54,7 +54,8 @@ from pathlib import Path
 
 from ..config import resolved_backup_ips, resolved_backup_localhost
 from ..remote import base_url, push_binary, push_file, render
-from .authentik_phase import (BRAND_FIELDS, apply_brand, dump_logs, pin_applied_tag,
+from .authentik_phase import (BRAND_FIELDS, EMAIL_LOGO_PATH, apply_brand, dump_logs,
+                              email_logo_volume, pin_applied_tag,
                               tag_change_warning, wait_healthy)
 from .base import Phase, PhaseContext
 from .base_setup import BACKUP_PORT
@@ -100,9 +101,13 @@ class AuthentikSinglePhase(Phase):
 
     # branding — identical mechanism to the HA phase (upload, then derive the
     # bind-mount from the same setting so the two halves can't drift apart).
-    def _branding_volumes(self, ctx: PhaseContext) -> list[str]:
+    # Returns (server volumes, worker volumes); the worker also gets the logo
+    # over EMAIL_LOGO_PATH. No "changed" tracking needed: apply always does
+    # a full `systemctl restart`, which recreates the containers.
+    def _branding_volumes(self, ctx: PhaseContext) -> tuple[list[str], list[str]]:
         b = self._acfg(ctx).get("branding") or {}
         vols: list[str] = []
+        worker_vols: list[str] = []
         conn = ctx.fleet.conns[0]
         for key, (subdir, _field) in BRAND_FIELDS.items():
             src = str(b.get(key) or "").strip()
@@ -117,7 +122,9 @@ class AuthentikSinglePhase(Phase):
             ctx.record(conn.node.name, f"branding {key}", True,
                        f"{name} → {remote}" + ("" if changed else " (unchanged)"))
             vols.append(f"{remote}:/web/dist/assets/{subdir}/{name}")
-        return vols
+            if key == "logo":
+                worker_vols += email_logo_volume(ctx, conn.node.name, remote)
+        return vols, worker_vols
 
     # email/SMTP — identical resolution order to the HA phase: site config →
     # interactive prompt, pinned in state, password via hidden input, never
@@ -219,6 +226,10 @@ class AuthentikSinglePhase(Phase):
             lines.append(f"branding: upload {', '.join(named)}, bind-mount over "
                          "/web/dist/assets/{icons,images}/, AND point the default brand "
                          "at /static/dist/assets/... via the API")
+            if b.get("logo"):
+                lines.append(f"email logo: mount the logo over {EMAIL_LOGO_PATH} in the "
+                             "worker (authentik attaches that file to every email; "
+                             "PNG only)")
         lines.append("install authentik-compose.service (systemd, After=docker.service "
                      "network-online.target) and enable it — restart: \"no\" in compose "
                      "means dockerd no longer restarts containers directly on boot ahead "
@@ -251,13 +262,14 @@ class AuthentikSinglePhase(Phase):
                      email=email)
         # uploads happen before the compose file is rendered, so the mounts
         # in it always refer to files that are already on the node
-        branding = self._branding_volumes(ctx)
+        branding, branding_worker = self._branding_volumes(ctx)
         backup_ips = resolved_backup_ips(cfg.raw, ctx.state.data["generated"])
         pg_loopback = resolved_backup_localhost(cfg.raw, ctx.state.data["generated"])
         compose = render("authentik-single-compose.yml.j2",
                          extra_server_volumes=branding
                          + list(acfg.get("extra_server_volumes", []) or []),
-                         extra_worker_volumes=list(acfg.get("extra_worker_volumes", []) or []),
+                         extra_worker_volumes=branding_worker
+                         + list(acfg.get("extra_worker_volumes", []) or []),
                          publish_pg_port=bool(backup_ips) or pg_loopback,
                          pg_loopback=pg_loopback and not backup_ips,
                          pg_port=BACKUP_PORT)

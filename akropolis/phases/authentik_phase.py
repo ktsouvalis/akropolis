@@ -127,6 +127,25 @@ BRAND_FIELDS = {
     "background": ("images", "branding_default_flow_background"),
 }
 
+# The brand record does NOT reach outgoing email. authentik's
+# stages/email/utils.py:logo_data() opens the hardcoded relative path
+# web/dist/assets/icons/icon_left_brand.png (WORKDIR is /) and attaches it
+# inline as cid:logo, labelled logo.png. Emails are sent by worker tasks, so
+# the configured logo is mounted over that file in the WORKER. PNG only:
+# MIMEImage can't guess a subtype for e.g. SVG, which would break every send.
+EMAIL_LOGO_PATH = "/web/dist/assets/icons/icon_left_brand.png"
+
+
+def email_logo_volume(ctx, node: str, remote: str) -> list[str]:
+    """Worker bind-mount replacing authentik's email logo with `remote`, or
+    nothing (with a warning) if it isn't a PNG."""
+    if Path(remote).suffix.lower() != ".png":
+        ctx.record(node, "branding email logo", False,
+                   f"{Path(remote).name} is not a PNG — emails keep the stock logo",
+                   warn=True)
+        return []
+    return [f"{remote}:{EMAIL_LOGO_PATH}:ro"]
+
 
 def find_default_brand_uuid(ctx, conn, token: str, port: int = 9443) -> str:
     """Look up the UUID of the default brand. Empty string if not found."""
@@ -290,9 +309,17 @@ class AuthentikPhase(Phase):
     # Asset paths mirror the production compose:
     #   /web/dist/assets/icons/<name>   ← logo, favicon
     #   /web/dist/assets/images/<name>  ← background
-    def _branding_volumes(self, ctx: PhaseContext) -> list[str]:
+    # plus, in the worker only, the logo over EMAIL_LOGO_PATH.
+    #
+    # Returns (server volumes, worker volumes, nodes whose files changed). The
+    # last matters because push_binary replaces the file (new inode): a
+    # running container keeps the OLD file bind-mounted, so a node needs
+    # recreating even when the compose file itself is unchanged.
+    def _branding_volumes(self, ctx: PhaseContext) -> tuple[list[str], list[str], set[str]]:
         b = self._acfg(ctx).get("branding") or {}
         vols: list[str] = []
+        worker_vols: list[str] = []
+        touched: set[str] = set()
         for key, (subdir, _field) in BRAND_FIELDS.items():
             src = str(b.get(key) or "").strip()
             if not src:
@@ -304,10 +331,14 @@ class AuthentikPhase(Phase):
             remote = f"/opt/authentik/branding/{subdir}/{name}"
             for conn in ctx.fleet:
                 changed = push_binary(conn, local, remote)
+                if changed:
+                    touched.add(conn.node.name)
                 ctx.record(conn.node.name, f"branding {key}", True,
                            f"{name} → {remote}" + ("" if changed else " (unchanged)"))
             vols.append(f"{remote}:/web/dist/assets/{subdir}/{name}")
-        return vols
+            if key == "logo":
+                worker_vols += email_logo_volume(ctx, ctx.fleet.conns[0].node.name, remote)
+        return vols, worker_vols, touched
 
     def _acfg(self, ctx: PhaseContext) -> dict:
         return ctx.cfg.raw.get("authentik") or {}
@@ -408,6 +439,10 @@ class AuthentikPhase(Phase):
                          "/web/dist/assets/{icons,images}/, AND point the default "
                          "brand at /static/dist/assets/... via the API (mounting "
                          "alone leaves the stock logo showing)")
+            if b.get("logo"):
+                lines.append(f"email logo: mount the logo over {EMAIL_LOGO_PATH} in the "
+                             "worker (authentik attaches that file to every email; "
+                             "PNG only)")
         lines.append("verify: server+worker healthy on all nodes, /-/health/ready/ 200 "
                      "per node, API answers with the bootstrap token")
         return lines
@@ -439,11 +474,12 @@ class AuthentikPhase(Phase):
                      email=email)
         # uploads happen before the compose file is rendered, so the mounts
         # in it always refer to files that are already on the node
-        branding = self._branding_volumes(ctx)
+        branding, branding_worker, branding_touched = self._branding_volumes(ctx)
         compose = render("authentik-compose.yml.j2",
                          extra_server_volumes=branding
                          + list(acfg.get("extra_server_volumes", []) or []),
-                         extra_worker_volumes=list(acfg.get("extra_worker_volumes", []) or []))
+                         extra_worker_volumes=branding_worker
+                         + list(acfg.get("extra_worker_volumes", []) or []))
         unit = __import__("importlib").resources.files("akropolis.templates") \
             .joinpath("authentik-compose.service").read_text()
 
@@ -455,7 +491,7 @@ class AuthentikPhase(Phase):
             c1 = push_file(conn, env, "/opt/authentik/.env", mode="0600")
             c2 = push_file(conn, compose, "/opt/authentik/docker-compose.yml")
             c3 = push_file(conn, unit, "/etc/systemd/system/authentik-compose.service")
-            changed[node] = c1 or c2 or c3
+            changed[node] = c1 or c2 or c3 or node in branding_touched
             r = conn.run("systemctl daemon-reload && systemctl enable authentik-compose")
             ctx.record(node, "config + unit rendered", r.ok,
                        ("changed" if changed[node] else "unchanged") if r.ok else r.err)

@@ -11,6 +11,27 @@ dead ends.
 
 ## [Unreleased]
 
+## [2.8.0] - 2026-09-29
+
+### Added
+
+- `authentik.branding.logo` now also brands outgoing email. authentik
+  doesn't take the email logo from the brand record: it attaches the fixed
+  file `/web/dist/assets/icons/icon_left_brand.png` inline (`cid:logo`),
+  and the worker is what sends it. Both phases (HA and single-node) now
+  bind-mount the uploaded logo read-only over that path in the worker
+  container. PNG only. Any other format is skipped with a warning, because
+  authentik's `MIMEImage` can't guess an SVG's type and every send would
+  fail.
+
+### Fixed
+
+- HA `authentik` phase: replacing a branding file with new content under the
+  same name now recreates the containers on a running cluster. Before, only
+  an `.env` or compose change triggered the rolling restart. The upload
+  replaces the file (new inode), so the running containers kept serving the
+  old file.
+
 ## [2.7.0] - 2026-09-25
 
 ### Added
