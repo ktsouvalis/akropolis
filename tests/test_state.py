@@ -44,6 +44,16 @@ def test_mark_phase_merges_detail(state_path):
     assert entry["error"] == "timeout"
 
 
+def test_mark_phase_clears_previous_error(state_path):
+    st = State(state_path, "site-a")
+    st.mark_phase("nginx", "failed", {"error": "certbot failed"})
+    st.mark_phase("nginx", "pending")
+    assert "error" not in st.data["phases"]["nginx"]
+    st.mark_phase("nginx", "failed", {"error": "again"})
+    st.mark_phase("nginx", "done")
+    assert "error" not in st.data["phases"]["nginx"]
+
+
 def test_mark_phase_creates_parent_dirs(state_path):
     assert not state_path.parent.exists()
     State(state_path, "site-a").mark_phase("etcd", "done")

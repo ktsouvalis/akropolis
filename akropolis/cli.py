@@ -219,7 +219,9 @@ def phase_rows(pipeline: list, state: State) -> list[dict]:
             "name": phase.name,
             "status": entry.get("status", "pending"),
             "updated_at": entry.get("updated_at", ""),
-            "error": entry.get("error", ""),
+            # state files from before 2.9.2 can carry a stale error on a done
+            # phase (a failed attempt, then a successful replay)
+            "error": entry.get("error", "") if entry.get("status") != "done" else "",
             "optional": phase.optional,
         })
     return rows

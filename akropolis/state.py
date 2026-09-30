@@ -37,6 +37,9 @@ class State:
 
     def mark_phase(self, name: str, status: str, detail: dict | None = None) -> None:
         entry = self.data["phases"].setdefault(name, {})
+        # an error describes the attempt that recorded it; a later mark
+        # (done, replay → pending, a verify failure) must not inherit it
+        entry.pop("error", None)
         entry["status"] = status
         entry["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%S%z")
         if detail:

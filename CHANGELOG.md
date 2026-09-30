@@ -11,6 +11,16 @@ dead ends.
 
 ## [Unreleased]
 
+## [2.9.2] - 2026-09-30
+
+### Fixed
+
+- `akro status` no longer shows an old error on a phase that has since
+  succeeded (for example "certbot failed" on a `done` nginx row after a
+  successful replay). A phase's recorded error is now cleared whenever the
+  phase gets a new status, and errors already saved on `done` phases are
+  not shown.
+
 ## [2.9.1] - 2026-09-30
 
 ### Fixed

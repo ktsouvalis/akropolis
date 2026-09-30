@@ -71,6 +71,15 @@ def test_phase_rows_merges_done_and_failed(tmp_path):
     assert rows["authentik"]["status"] == "pending"  # untouched phase stays pending
 
 
+def test_phase_rows_hides_stale_error_on_done_phase(tmp_path):
+    # a pre-2.9.2 state file: failed attempt, then done without clearing
+    state = State(tmp_path / "site.json", "test-single")
+    state.data["phases"]["nginx"] = {"status": "done", "updated_at": "x",
+                                     "error": "certbot failed"}
+    rows = {r["name"]: r for r in phase_rows(pipeline_for("single"), state)}
+    assert rows["nginx"]["error"] == ""
+
+
 def test_phase_rows_marks_optional_phases(tmp_path):
     state = State(tmp_path / "site.json", "test-single")
     rows = {r["name"]: r for r in phase_rows(pipeline_for("single"), state)}
