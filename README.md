@@ -138,10 +138,11 @@ akro provision config.<site>.yml --only preflight
 akro provision config.<site>.yml
 ```
 
-akropolis keeps its state next to where you run it: `config.<site>.yml` and
-`.state/<site>.json` (mode 600) are resolved relative to the working directory,
-not to the binary. Give each site its own directory, or set
-`provision.state_file` explicitly.
+akropolis keeps its state next to the config: a relative
+`provision.state_file` (default `.state/<site>.json`, mode 600) is resolved
+against the config file's directory, so `akro status /path/to/config.<site>.yml`
+finds the same state from any working directory. Set an absolute
+`provision.state_file` to keep it elsewhere.
 
 ### Live progress
 

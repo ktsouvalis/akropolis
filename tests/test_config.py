@@ -132,7 +132,7 @@ def test_valid_ha_config_loads(write_config):
     assert len(cfg.nodes) == 3
     assert cfg.bootstrap_leader.name == "node1"
     assert cfg.authentik_tag == "2026.5.6"
-    assert cfg.state_file == Path(f".state/{cfg.name}.json")
+    assert cfg.state_file == path.parent / ".state" / f"{cfg.name}.json"
 
 
 def test_valid_single_config_loads(write_config):
@@ -155,6 +155,37 @@ def test_custom_state_file(write_config):
     path = write_config(HA_BASE, {"provision": {"state_file": "/tmp/custom-state.json"}})
     cfg = load(path)
     assert str(cfg.state_file) == "/tmp/custom-state.json"
+
+
+def test_relative_state_file_is_anchored_to_config_dir(write_config, tmp_path, monkeypatch):
+    path = write_config(HA_BASE, {"provision": {"state_file": "st/site.json"}})
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    cfg = load(path)
+    assert cfg.state_file == path.parent / "st" / "site.json"
+
+
+def test_everything_under_state_dir_follows_the_config(write_config, tmp_path, monkeypatch):
+    """State file, transcripts and the .tmp swap all land next to the config,
+    whatever the working directory."""
+    from akropolis.cli import _transcript_path
+    from akropolis.state import State
+
+    path = write_config(HA_BASE)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    cfg = load(path)
+    state_dir = path.parent / ".state"
+
+    State(cfg.state_file, cfg.name).mark_phase("preflight", "done")
+    assert (state_dir / "test-site.json").exists()
+    assert _transcript_path(cfg, "provision").parent == state_dir
+    # a second load, from a different cwd again, sees the same state
+    monkeypatch.chdir(tmp_path)
+    assert State(load(path).state_file, "test-site").phase_status("preflight") == "done"
+    assert not (elsewhere / ".state").exists()
 
 
 # --- site block ---------------------------------------------------------

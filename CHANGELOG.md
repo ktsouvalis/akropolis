@@ -11,6 +11,17 @@ dead ends.
 
 ## [Unreleased]
 
+## [2.9.1] - 2026-09-30
+
+### Fixed
+
+- `.state/` is now read and written next to the config file, not in the
+  working directory: a relative `provision.state_file` (including the
+  default `.state/<site>.json`) resolves against the config file's
+  directory. Running `akro <command> /path/to/config.yml` from elsewhere no
+  longer reports "nothing provisioned". Transcripts and `clean` archives
+  follow the state file.
+
 ## [2.9.0] - 2026-09-30
 
 ### Changed

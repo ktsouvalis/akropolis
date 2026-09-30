@@ -457,7 +457,13 @@ def load(path: str | Path) -> SiteConfig:
     if problems:
         raise ConfigError(problems)
 
-    state_file = Path(_get(raw, "provision.state_file", f".state/{name}.json"))
+    # .state/ lives next to the config file: a relative state_file resolves
+    # against the config's directory, not the cwd, so every read and write
+    # under .state/ (state file, transcripts, `clean` archives, all derived
+    # from state_file) lands in the same place wherever akro is run from.
+    state_raw = Path(os.path.expanduser(
+        str(_get(raw, "provision.state_file", f".state/{name}.json"))))
+    state_file = state_raw if state_raw.is_absolute() else path.parent / state_raw
 
     return SiteConfig(
         name=name,
