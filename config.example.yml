@@ -254,7 +254,7 @@ secrets:
 # leader with ON_ERROR_STOP, then authentik starts back leader-alone-first
 # (health gate covers migrations if the dump is from an older tag).
 # Omit the section (or sql_file) → the phase records "skipped" and moves on.
-# Re-run with a fresher dump at real cutover: akropolis provision ... --replay restore
+# Re-run with a fresher dump at real cutover: akro provision ... --replay restore
 # restore:
 #   sql_file: ./dumps/authentik-prod.sql     # .sql or .sql.gz
 #   database: authentik                      # default

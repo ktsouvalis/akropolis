@@ -11,6 +11,21 @@ dead ends.
 
 ## [Unreleased]
 
+## [2.9.0] - 2026-09-30
+
+### Changed
+
+- The command is now `akro` instead of `akropolis`: the pip/source console
+  script, the release binary (`releases/latest/download/akro`), and every
+  usage hint and message. The project, package and repository keep the
+  akropolis name.
+- Releases publish the binary as `akro` and also, under the old name, as
+  `akropolis`, so `update` on a binary from 2.8.0 or earlier still works.
+  That update replaces the file in place and keeps the old filename. Rename
+  it to `akro` by hand afterwards.
+- A pip/source install needs a reinstall (`pip install -e .`) to get the
+  `akro` script. The old `akropolis` script is gone.
+
 ## [2.8.0] - 2026-09-29
 
 ### Added

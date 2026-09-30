@@ -27,12 +27,12 @@ Akropolis orchestrates a robust, highly-available identity infrastructure powere
 
 *Note: All trademarks are the property of their respective owners.*
 
-The `akropolis` release binary also bundles the pure-Python libraries it
+The `akro` release binary also bundles the pure-Python libraries it
 depends on (paramiko, Jinja2, PyYAML, rich, textual, requests, urllib3 and
 their own dependencies) — their source ships inside that single file, not
 just akropolis's own. Each release publishes a `THIRD_PARTY_LICENSES.md`
 alongside the binary indexing every bundled package's license, and the full
-license text for each ships in the archive next to it; `akropolis licenses`
+license text for each ships in the archive next to it; `akro licenses`
 prints the same listing from whatever is actually installed/bundled in the
 copy you're running. paramiko is LGPL-2.1; requests is Apache-2.0;
 everything else bundled is MIT/BSD. `psycopg2`, used only by `akropolis
@@ -60,9 +60,9 @@ Download the single-file executable from the
 
 ```bash
 sudo apt install python3-cryptography python3-bcrypt python3-nacl
-curl -fLO https://github.com/ktsouvalis/akropolis/releases/latest/download/akropolis
-chmod +x akropolis
-./akropolis --version
+curl -fLO https://github.com/ktsouvalis/akropolis/releases/latest/download/akro
+chmod +x akro
+./akro --version
 ```
 
 That is the whole installation. The file is a self-contained
@@ -78,7 +78,7 @@ posture for a tool that provisions identity infrastructure. This way
 `cryptography` stays on the distribution's security-update track.
 `python3-cryptography` is usually present already on a server install.
 
-Only needed on the **workstation you run `akropolis monitor` from**, and only
+Only needed on the **workstation you run `akro monitor` from**, and only
 for one panel: `sudo apt install python3-psycopg2`. Its dashboard degrades
 gracefully without it, simply omitting the PostgreSQL replication-slot detail;
 nothing else is affected. Not required on the provisioned nodes.
@@ -95,7 +95,7 @@ Releases are built on Python 3.10, the floor in `requires-python`:
 
 ```bash
 PYTHON=python3.10 ./tools/build_pyz.sh
-sha256sum dist/akropolis
+sha256sum dist/akro
 ```
 
 The interpreter matters because the bundled set depends on it: `rich` requires
@@ -113,9 +113,9 @@ git clone https://github.com/ktsouvalis/akropolis.git
 cd akropolis
 python3 -m venv .venv            # Debian/Ubuntu/Mint: apt install python3-venv if missing
 .venv/bin/pip install -e .
-.venv/bin/akropolis --version
+.venv/bin/akro --version
 
-./tools/build_pyz.sh             # → dist/akropolis
+./tools/build_pyz.sh             # → dist/akro
 ```
 
 </details>
@@ -127,15 +127,15 @@ Requirements on the **nodes**: fresh Ubuntu 24.04, a root-capable SSH user, corr
 
 ```bash
 # 1. answer questions once; they are materialized into a reviewable file
-akropolis init                          # → config.<site>.yml
+akro init                          # → config.<site>.yml
 
 # 2. read the file. really. this is the review-before-touching-anything step.
 
 # 3. read-only validation of the nodes: safe to run anywhere, changes nothing
-akropolis provision config.<site>.yml --only preflight
+akro provision config.<site>.yml --only preflight
 
 # 4. the full pipeline (resumable; each phase asks before applying)
-akropolis provision config.<site>.yml
+akro provision config.<site>.yml
 ```
 
 akropolis keeps its state next to where you run it: `config.<site>.yml` and
@@ -150,55 +150,55 @@ Every long-running operation announces itself *before* it runs: an animated stat
 ## Commands
 
 ```
-akropolis --version                 print the installed version and exit
-akropolis -h | --help                top-level help; akropolis <command> -h for a command's own
+akro --version                 print the installed version and exit
+akro -h | --help                top-level help; akropolis <command> -h for a command's own
 
-akropolis init [-o FILE]            interactive wizard → writes config.<site>.yml
+akro init [-o FILE]            interactive wizard → writes config.<site>.yml
   -o, --output FILE                    output path (default: config.<site>.yml)
 
-akropolis provision CONFIG          run the phase pipeline against a site (resumable)
+akro provision CONFIG          run the phase pipeline against a site (resumable)
   --only PHASE [PHASE...]              run only the named phase(s), e.g. --only preflight
   --replay PHASE [PHASE...]            re-run specific completed phase(s)
 
-akropolis status CONFIG             phase-by-phase status: which phases are done,
+akro status CONFIG             phase-by-phase status: which phases are done,
                                        failed, or still pending (reads the state
                                        file only — no SSH, no prompts)
 
-akropolis shutdown CONFIG           gracefully stop the authentik server+worker
+akro shutdown CONFIG           gracefully stop the authentik server+worker
                                        (ha: on all 3 nodes, other services left running;
                                         single: postgresql left running)
 
-akropolis start CONFIG              start the authentik backend(s) again — refuses
+akro start CONFIG              start the authentik backend(s) again — refuses
                                        unless `shutdown` last completed gracefully
 
-akropolis clean CONFIG              tear the site down to bare VMs (reverse build
+akro clean CONFIG              tear the site down to bare VMs (reverse build
                                        order; typed site-name confirmation)
   --i-know-this-is-production          required additionally when site.environment
                                         is production
 
-akropolis ldap-reconcile CONFIG     repoint Authentik LDAP source identifiers that
+akro ldap-reconcile CONFIG     repoint Authentik LDAP source identifiers that
                                        have drifted out-of-band (same username, new
                                        entryUUID) — see LDAP identifier reconciliation
   --source SLUG                        only reconcile this LDAP source slug
                                         (default: every configured LDAP source)
 
-akropolis monitor CONFIG            real-time cluster health dashboard (ha topology only)
+akro monitor CONFIG            real-time cluster health dashboard (ha topology only)
 
-akropolis logs CONFIG               cluster-wide log viewer over SSH (ha topology only)
+akro logs CONFIG               cluster-wide log viewer over SSH (ha topology only)
   --last HOURS                         hours of logs to fetch (default: 24)
   --level {debug,info,warning,error}   minimum severity to include (default: warning)
   --save FILE                          write a plain-text report to FILE instead of
                                         showing the TUI (.log appended if omitted)
 
-akropolis update                    download and install the latest release
+akro update                    download and install the latest release
                                        (zipapp binary only)
 
-akropolis whats-new                 show the CHANGELOG.md entry for the
+akro whats-new                 show the CHANGELOG.md entry for the
                                        installed version
   --version VERSION                    show the entry for a specific version
   --all                                show the full changelog
 
-akropolis licenses                  show third-party license info for every
+akro licenses                  show third-party license info for every
                                        package actually bundled/installed
                                        right now
 ```
@@ -213,15 +213,15 @@ site](#cleaning-a-site) for `--only`/`--replay`/`--i-know-this-is-production`.
 
 Every command checks GitHub for a newer release (cached for 24h) and prints a
 one-line notice if one is available; it never blocks or fails a command if
-the check can't reach the network. `akropolis check-update` forces a fresh,
+the check can't reach the network. `akro check-update` forces a fresh,
 uncached check and reports a definite answer, exiting 1 if a release is
 available — useful from a script or cron rather than waiting for the notice.
-`akropolis update` downloads the latest `akropolis` binary, verifies it
+`akro update` downloads the latest `akro` binary, verifies it
 against the release's `SHA256SUMS`, and replaces the running file in place.
 It only works on the zipapp binary from GitHub releases — a source/pip
 install should use `git pull` / `pip install -U` instead. It needs write
 access to the directory the binary lives in: fine for `~/.local/bin`, but
-`sudo akropolis update` if it was installed to `/usr/local/bin` (root-owned
+`sudo akro update` if it was installed to `/usr/local/bin` (root-owned
 by default) rather than a user-writable location.
 
 ## The phase model
@@ -235,7 +235,7 @@ Every phase runs **plan → confirm → apply → verify**:
 
 Progress is recorded in a per-site state file (see below), so a re-run skips completed phases and resumes at the frontier. `--replay PHASE` marks exactly the named phases pending (everything else keeps its done-skip) and is designed to be a no-op or an explicit, detected change, never a re-bootstrap. Preflight is state-aware: on a mid-lifecycle run, ports, containers and the VIP owned by already-completed phases are expected (the VIP check even inverts once nginx-keepalived is done: answering becomes the healthy state), and residual findings like a low-disk reading or the artifacts of a phase being replayed degrade to warnings. A virgin host gets the full strict treatment.
 
-`akropolis status CONFIG` prints exactly what's in that state file, phase by phase — `done`/`failed`/`declined`/`skipped`/`pending`, with the timestamp and (for `failed`) the recorded error, plus which phase runs next. It only reads the state file, so it never touches SSH or prompts and is safe to run against a site mid-failure, e.g. a single-node run left stopped partway through so its certs and DB restore can be replayed once the primary is confirmed dead.
+`akro status CONFIG` prints exactly what's in that state file, phase by phase — `done`/`failed`/`declined`/`skipped`/`pending`, with the timestamp and (for `failed`) the recorded error, plus which phase runs next. It only reads the state file, so it never touches SSH or prompts and is safe to run against a site mid-failure, e.g. a single-node run left stopped partway through so its certs and DB restore can be replayed once the primary is confirmed dead.
 
 ## Configuration file
 
@@ -432,7 +432,7 @@ Verify parses the emitted file back and asserts the schema: all top-level keys t
 
 ## Topology: HA vs single-node
 
-`site.topology` picks which phases run. `akropolis init` asks for it up
+`site.topology` picks which phases run. `akro init` asks for it up
 front and adapts everything downstream (node count, whether it asks for a
 VIP, the monitor-IP question, the restore comment footer), and it defaults to
 `ha` (the 3-node stack
@@ -528,7 +528,7 @@ self-signed, `proxy_ssl_verify off`) — the same trust split the HA
 topology's nginx already uses against its 3 backends — and serves the same
 bilingual maintenance page whenever authentik is unreachable, `502`/`503`/
 `504` status preserved so monitoring still sees the outage. This also means
-`akropolis shutdown` now gets its maintenance page on `single` too: nginx is
+`akro shutdown` now gets its maintenance page on `single` too: nginx is
 untouched by that command and keeps answering while authentik's containers
 are stopped, exactly like HA's nginx does.
 
@@ -573,7 +573,7 @@ material without a separate step.
 
 ## Cleaning a site
 
-`akropolis clean config.<site>.yml` tears the whole stack back down to bare VMs (the inverse of the pipeline, for test iteration). Teardown runs in reverse build order (keepalived/VIP first, so nothing routes traffic at a cluster being dismantled; database before its DCS): keepalived → nginx → authentik → haproxy → patroni + **all** PostgreSQL data → etcd + data → TLS material (letsencrypt, webroot, the certbot distribution key and its authorized_keys line) → UFW reset with ssh re-allowed *before* re-enable → the `/etc/hosts` block → restore-dump leftovers in `/tmp`. Packages (docker, postgresql-16, keepalived, certbot) and the hostname are deliberately left alone: apt state belongs to your patching policy, and removing data and config is what makes the next `provision` honest.
+`akro clean config.<site>.yml` tears the whole stack back down to bare VMs (the inverse of the pipeline, for test iteration). Teardown runs in reverse build order (keepalived/VIP first, so nothing routes traffic at a cluster being dismantled; database before its DCS): keepalived → nginx → authentik → haproxy → patroni + **all** PostgreSQL data → etcd + data → TLS material (letsencrypt, webroot, the certbot distribution key and its authorized_keys line) → UFW reset with ssh re-allowed *before* re-enable → the `/etc/hosts` block → restore-dump leftovers in `/tmp`. Packages (docker, postgresql-16, keepalived, certbot) and the hostname are deliberately left alone: apt state belongs to your patching policy, and removing data and config is what makes the next `provision` honest.
 
 Destruction earns the typed-site-name gate in *every* environment, not just production; `site.environment: production` is refused outright unless `--i-know-this-is-production` is also given. The local state file is archived to `.state/<site>.json.cleaned-<timestamp>` (0600, the pinned secrets are your paper trail) and removed, so the next provision regenerates every secret and preflight's `refuse_existing` passes on a genuinely blank slate. Cleaning a half-built node (exactly what a failed provision leaves behind) is a supported case: every step is idempotent.
 
@@ -582,7 +582,7 @@ Destruction earns the typed-site-name gate in *every* environment, not just prod
 Bump `authentik.tag` in `config.<site>.yml`, then:
 
 ```bash
-akropolis provision config.<site>.yml --replay authentik
+akro provision config.<site>.yml --replay authentik
 ```
 
 `--replay` marks only the `authentik` phase pending; every other completed phase stays skipped. The phase finds the cluster already running and switches to its rolling path: on `ha` that's node-3 → node-2 → node-1, one at a time, `docker compose down && up -d`, gated on both containers reporting `healthy` before moving to the next node — a node that fails its gate stops the phase with the others still serving. On `single` it's the one node, same health gate.
@@ -605,8 +605,8 @@ account's group memberships/attributes silently freeze at whatever they were
 before the change until someone notices missing access.
 
 ```bash
-akropolis ldap-reconcile config.<site>.yml
-akropolis ldap-reconcile config.<site>.yml --source my-ldap-source
+akro ldap-reconcile config.<site>.yml
+akro ldap-reconcile config.<site>.yml --source my-ldap-source
 ```
 
 This reads every configured LDAP source's own `object_uniqueness_field` and
@@ -655,14 +655,14 @@ itself.
 ## Monitoring
 
 `ha` topology only for now; single-node's smaller schema is not yet
-understood by `akropolis monitor`/`akropolis logs`. The `handoff` phase
+understood by `akro monitor`/`akro logs`. The `handoff` phase
 already emitted `config.<site>.monitor.yml` on your workstation; point both
 commands at that file, not at `config.<site>.yml`.
 
-### `akropolis monitor`
+### `akro monitor`
 
 ```bash
-akropolis monitor config.<site>.monitor.yml
+akro monitor config.<site>.monitor.yml
 ```
 
 Real-time TUI, one panel per service, refreshed every `refresh_interval`
@@ -695,12 +695,12 @@ palette. Set `unicode_bullets: false` in the monitor config if your terminal
 renders `●` as an underscore (common in Proxmox containers without a UTF-8
 locale).
 
-### `akropolis logs`
+### `akro logs`
 
 ```bash
-akropolis logs config.<site>.monitor.yml                       # TUI, last 24h, warning+
-akropolis logs config.<site>.monitor.yml --last 6 --level error
-akropolis logs config.<site>.monitor.yml --save cluster_logs   # writes cluster_logs.log, no TUI
+akro logs config.<site>.monitor.yml                       # TUI, last 24h, warning+
+akro logs config.<site>.monitor.yml --last 6 --level error
+akro logs config.<site>.monitor.yml --save cluster_logs   # writes cluster_logs.log, no TUI
 ```
 
 Collects warnings and errors from every service on every node over SSH.
@@ -766,5 +766,5 @@ This repository's commit history begins at v1.0.1. History prior to this point i
 
 MIT. Third-party components bundled inside the release binary are under
 their own licenses — see `THIRD_PARTY_LICENSES.md` published with each
-release, `akropolis licenses`, or the [Architecture
+release, `akro licenses`, or the [Architecture
 deployed](#architecture-deployed) section above.

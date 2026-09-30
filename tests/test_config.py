@@ -118,7 +118,7 @@ def test_config_version_too_old_raises(write_config):
 
 def test_config_version_too_new_raises(write_config):
     path = write_config(HA_BASE, {"site": {"config_version": CONFIG_SCHEMA_VERSION + 1}})
-    with pytest.raises(ConfigError, match="akropolis update"):
+    with pytest.raises(ConfigError, match="akro update"):
         load(path)
 
 

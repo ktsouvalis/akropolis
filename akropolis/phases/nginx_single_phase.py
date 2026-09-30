@@ -1,6 +1,6 @@
 """nginx (single) — bare-metal reverse proxy in front of the one node's
 Authentik containers: terminates public TLS and serves a maintenance page
-whenever Authentik is unreachable (akropolis shutdown, or an actual outage).
+whenever Authentik is unreachable (akro shutdown, or an actual outage).
 
 Bare-metal (systemd), not a container — deliberately, for the same reason
 keepalived is bare-metal on the HA topology (see nginx_keepalived_phase.py):

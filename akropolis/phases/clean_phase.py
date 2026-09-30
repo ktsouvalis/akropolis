@@ -227,6 +227,6 @@ class CleanPhase(Phase):
                            "" if r.ok else "still present")
                 ok = ok and r.ok
         if ok:
-            console.print("[green]nodes are bare — `akropolis provision` starts "
+            console.print("[green]nodes are bare — `akro provision` starts "
                           "from scratch (all secrets regenerated).[/green]")
         return ok

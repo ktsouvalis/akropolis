@@ -2,7 +2,7 @@
 #
 # Build the single-file akropolis executable (a PEP 441 zipapp).
 #
-#   ./tools/build_pyz.sh          -> dist/akropolis
+#   ./tools/build_pyz.sh          -> dist/akro
 #
 # The result is one executable file carrying akropolis plus its pure-Python
 # dependencies (paramiko, Jinja2, PyYAML, rich, textual, requests, urllib3
@@ -45,7 +45,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BUILD="$ROOT/build/pyz"
 DIST="$ROOT/dist"
-OUT="$DIST/akropolis"
+OUT="$DIST/akro"
 
 # Deterministic timestamps so two builds of the same commit produce the same
 # bytes. Falls back to the commit date, then to a fixed epoch.
@@ -139,7 +139,7 @@ echo "==> writing third-party license manifest"
 # texts themselves already travel inside the archive (see above); this is the
 # human-readable index of what's in there and under what terms, shipped
 # alongside the binary as dist/THIRD_PARTY_LICENSES.md. Shares its row/render
-# logic with `akropolis licenses` (akropolis/licenses.py) so the two listings
+# logic with `akro licenses` (akropolis/licenses.py) so the two listings
 # can't drift apart.
 NOTE="akropolis (MIT) is distributed as a single-file zipapp that also carries the pure-Python packages it depends on -- their source ships inside this archive, not just akropolis's own. Each package's full license text ships alongside it, under the paths listed below; this file is the index, not a substitute for those texts.
 

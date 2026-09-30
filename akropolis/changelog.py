@@ -1,4 +1,4 @@
-"""Read and slice the shipped CHANGELOG.md for `akropolis whats-new`.
+"""Read and slice the shipped CHANGELOG.md for `akro whats-new`.
 
 CHANGELOG.md lives at the repo root (where GitHub renders it and where the
 config-version error message already points operators); `akropolis/CHANGELOG.md`

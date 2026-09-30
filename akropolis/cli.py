@@ -1,19 +1,19 @@
 """akropolis — provision and monitor an Authentik cluster (3-node HA or single-node).
 
-    akropolis init                      # interactive wizard → config.<site>.yml
-    akropolis provision config.yml      # phase runner (resumable)
-    akropolis provision config.yml --replay preflight
-    akropolis status    config.yml      # phase-by-phase status (state file only, no SSH)
-    akropolis shutdown  config.yml      # gracefully stop the authentik backend(s)
-    akropolis start      config.yml     # bring them back — requires a prior shutdown
-    akropolis clean     config.yml      # tear the site down to bare VMs
-    akropolis ldap-reconcile config.yml # repoint drifted LDAP source identifiers
-    akropolis monitor   config.yml      # real-time cluster health dashboard
-    akropolis logs      config.yml      # cluster-wide log viewer (SSH), --save to download
-    akropolis update                    # install the latest release (zipapp binary only)
-    akropolis check-update              # check for a newer release without installing it
-    akropolis whats-new                 # show the changelog for the installed version
-    akropolis licenses                  # show third-party license info
+    akro init                      # interactive wizard → config.<site>.yml
+    akro provision config.yml      # phase runner (resumable)
+    akro provision config.yml --replay preflight
+    akro status    config.yml      # phase-by-phase status (state file only, no SSH)
+    akro shutdown  config.yml      # gracefully stop the authentik backend(s)
+    akro start      config.yml     # bring them back — requires a prior shutdown
+    akro clean     config.yml      # tear the site down to bare VMs
+    akro ldap-reconcile config.yml # repoint drifted LDAP source identifiers
+    akro monitor   config.yml      # real-time cluster health dashboard
+    akro logs      config.yml      # cluster-wide log viewer (SSH), --save to download
+    akro update                    # install the latest release (zipapp binary only)
+    akro check-update              # check for a newer release without installing it
+    akro whats-new                 # show the changelog for the installed version
+    akro licenses                  # show third-party license info
 """
 
 from __future__ import annotations
@@ -61,7 +61,7 @@ console = Console()
 # `single` drops etcd/Patroni/HAProxy/keepalived entirely (see config.py
 # DEFAULT_AUTHENTIK_TAG / REQUIRED_FREE_PORTS_SINGLE for the reasoning).
 # Both topologies now get a reverse proxy that terminates public TLS and
-# serves a maintenance page while `akropolis shutdown` has authentik down:
+# serves a maintenance page while `akro shutdown` has authentik down:
 # `ha`'s is containerized + VRRP (nginx_keepalived_phase.py), `single`'s is
 # bare-metal (nginx_single_phase.py) — condensed for one node, no VRRP/
 # keepalived, no distribution keypair. `clean` is topology-aware too (see
@@ -468,14 +468,14 @@ def cmd_whats_new(args: argparse.Namespace) -> int:
     entry = changelog.entry_for(version, text)
     if entry is None:
         console.print(f"[yellow]no changelog entry for {version}.[/yellow] "
-                      "Run `akropolis whats-new --all` for the full history.")
+                      "Run `akro whats-new --all` for the full history.")
         return 1
     console.print(Markdown(entry))
     return 0
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="akropolis", description=__doc__,
+    parser = argparse.ArgumentParser(prog="akro", description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--version", action="version", version=f"akropolis {__version__}")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -577,7 +577,7 @@ def main(argv: list[str] | None = None) -> int:
         if latest:
             console.print(
                 f"[yellow]a new akropolis release is available: "
-                f"{__version__} → {latest}[/yellow] [dim](run `akropolis update`)[/dim]"
+                f"{__version__} → {latest}[/yellow] [dim](run `akro update`)[/dim]"
             )
 
     return args.func(args)

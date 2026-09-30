@@ -1,4 +1,4 @@
-"""`akropolis init` — interactive wizard that materializes answers into a config file.
+"""`akro init` — interactive wizard that materializes answers into a config file.
 
 The wizard is the front door for first-time use; `provision` only ever reads
 the file. Validation happens as you type, and again on load.
@@ -66,7 +66,7 @@ yaml.SafeDumper.add_representer(
 
 
 def run_wizard(output: str | None = None) -> Path:
-    console.print("[bold]akropolis init[/bold] — answers are written to a config file; "
+    console.print("[bold]akro init[/bold] — answers are written to a config file; "
                   "provisioning always runs from the file, so you can review or edit it first.\n")
 
     site = _ask("site name (short, e.g. example-site)")
@@ -282,7 +282,7 @@ def run_wizard(output: str | None = None) -> Path:
                 "\n"
                 "# Optional — database restore (the migration/cutover move).\n"
                 "# Uncomment and set the dump path (on THIS workstation), then run:\n"
-                "#   akropolis provision <this file> --replay restore\n"
+                "#   akro provision <this file> --replay restore\n"
                 "# DESTRUCTIVE when enabled: drops the current database first.\n"
                 "# restore:\n"
                 "#   sql_file: ./dumps/authentik-prod.sql   # .sql or .sql.gz\n"
@@ -294,7 +294,7 @@ def run_wizard(output: str | None = None) -> Path:
                 "\n"
                 "# Optional — database restore (the migration/cutover move).\n"
                 "# Uncomment and set the dump path (on THIS workstation), then run:\n"
-                "#   akropolis provision <this file> --replay restore\n"
+                "#   akro provision <this file> --replay restore\n"
                 "# DESTRUCTIVE when enabled: drops the current database first.\n"
                 "# Database/owner are NOT configurable here — single-node's postgres\n"
                 "# container is always named/owned \"authentik\" (see NOTES.md).\n"
@@ -308,5 +308,5 @@ def run_wizard(output: str | None = None) -> Path:
                   f"[bold]{DEFAULT_AUTHENTIK_TAG[topology]}[/bold] (akropolis' default for "
                   f"topology '{topology}'), not to a version you chose. Every node is pinned "
                   "to it.")
-    console.print(f"then run: [bold]akropolis provision {out}[/bold]")
+    console.print(f"then run: [bold]akro provision {out}[/bold]")
     return out

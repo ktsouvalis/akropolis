@@ -96,14 +96,14 @@ class AuthentikShutdownPhase(Phase):
                          "are left running untouched — only the authentik "
                          "application containers stop")
             lines.append("the VIP stays up; nginx serves its maintenance page for "
-                         "the site until `akropolis start` brings authentik back")
+                         "the site until `akro start` brings authentik back")
         else:
             lines.append("the postgresql container in the same compose project is "
                          "left running untouched — only server+worker stop")
             lines.append("the bare-metal nginx in front of the node is untouched "
                          "and keeps running — it serves its maintenance page for "
-                         "the site until `akropolis start` brings authentik back")
-        lines.append("on success, unlocks `akropolis start` for this site (start "
+                         "the site until `akro start` brings authentik back")
+        lines.append("on success, unlocks `akro start` for this site (start "
                      "refuses unless this command last completed gracefully)")
         return lines
 
@@ -156,7 +156,7 @@ class AuthentikStartPhase(Phase):
         if status != "done":
             return [f"[red]refusing[/red]: no completed graceful shutdown on record "
                     f"(authentik-shutdown: {status}{self._gate_detail(ctx)}) — run "
-                    "`akropolis shutdown <config>` first; apply will refuse"]
+                    "`akro shutdown <config>` first; apply will refuse"]
         ha = ctx.cfg.topology == "ha"
         n = len(ctx.fleet.conns)
         if ha:
@@ -178,7 +178,7 @@ class AuthentikStartPhase(Phase):
         if status != "done":
             raise RuntimeError(
                 f"no completed graceful shutdown on record (authentik-shutdown: "
-                f"{status}{self._gate_detail(ctx)}) — run `akropolis shutdown <config>` first")
+                f"{status}{self._gate_detail(ctx)}) — run `akro shutdown <config>` first")
 
         scope = _scope(ctx)
         for conn in ctx.fleet:
@@ -197,7 +197,7 @@ class AuthentikStartPhase(Phase):
                                    "starting the remaining nodes")
 
         ctx.state.mark_phase("authentik-shutdown", "started",
-                             {"note": "cleared by a successful `akropolis start`"})
+                             {"note": "cleared by a successful `akro start`"})
 
     def verify(self, ctx: PhaseContext) -> bool:
         ok = True

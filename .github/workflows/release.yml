@@ -69,11 +69,11 @@ jobs:
 
       - name: Verify the artifact
         run: |
-          ./dist/akropolis --version
-          ./dist/akropolis --help > /dev/null
+          ./dist/akro --version
+          ./dist/akro --help > /dev/null
           python - <<'EOF'
           import sys
-          sys.path.insert(0, "dist/akropolis")
+          sys.path.insert(0, "dist/akro")
           from importlib import resources
           # The namespace-package trap: this is the check that catches a
           # regression in akropolis/templates/__init__.py.
@@ -84,10 +84,15 @@ jobs:
           print(f"{n} templates readable from the zipapp")
           EOF
 
+      # Binaries from before the rename (<= 2.8.0) self-update by fetching the
+      # asset named `akropolis`; keep publishing it under that name too.
+      - name: Legacy-named copy for pre-rename updaters
+        run: cp dist/akro dist/akropolis
+
       - name: Checksum
         working-directory: dist
         run: |
-          sha256sum akropolis THIRD_PARTY_LICENSES.md *.whl *.tar.gz > SHA256SUMS
+          sha256sum akro akropolis THIRD_PARTY_LICENSES.md *.whl *.tar.gz > SHA256SUMS
           cat SHA256SUMS
 
       - name: Extract release notes from CHANGELOG.md
@@ -109,9 +114,9 @@ jobs:
 
           ```
           sudo apt install python3-cryptography python3-bcrypt python3-nacl
-          curl -fLO https://github.com/ktsouvalis/akropolis/releases/download/TAG/akropolis
-          chmod +x akropolis
-          ./akropolis --version
+          curl -fLO https://github.com/ktsouvalis/akropolis/releases/download/TAG/akro
+          chmod +x akro
+          ./akro --version
           ```
 
           Verify with `sha256sum -c SHA256SUMS`. Reproducible on Python 3.10:
@@ -129,6 +134,7 @@ jobs:
           gh release create "$GITHUB_REF_NAME" \
             --title "akropolis ${GITHUB_REF_NAME#v}" \
             --notes-file release-notes.md \
+            dist/akro \
             dist/akropolis \
             dist/THIRD_PARTY_LICENSES.md \
             dist/SHA256SUMS \

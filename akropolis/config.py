@@ -244,7 +244,7 @@ def load(path: str | Path) -> SiteConfig:
         raise ConfigError([
             f"site.config_version is {raw_version}, this akropolis expects "
             f"{CONFIG_SCHEMA_VERSION}. Config-affecting changes landed between those "
-            f"versions -- check CHANGELOG.md (or run `akropolis whats-new --all`), "
+            f"versions -- check CHANGELOG.md (or run `akro whats-new --all`), "
             f"update the file accordingly, then bump config_version to "
             f"{CONFIG_SCHEMA_VERSION}."
         ])
@@ -252,7 +252,7 @@ def load(path: str | Path) -> SiteConfig:
         raise ConfigError([
             f"site.config_version is {raw_version}, this akropolis only understands up "
             f"to {CONFIG_SCHEMA_VERSION}. This config was written for a newer akropolis "
-            f"release -- run `akropolis update` before provisioning."
+            f"release -- run `akro update` before provisioning."
         ])
 
     problems: list[str] = []
