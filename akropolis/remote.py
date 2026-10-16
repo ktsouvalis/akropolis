@@ -118,6 +118,83 @@ def push_binary(conn: NodeConn, local_path, remote_path: str,
     return True
 
 
+def _tree_files(local_dir) -> list[tuple[str, "Path"]]:
+    """(./relative path, file) for every regular file under local_dir, in
+    byte order (what `LC_ALL=C sort` gives on the node). Anything with a
+    dot-component (.git, .DS_Store, editor swap files) is left out."""
+    from pathlib import Path
+    root = Path(local_dir).expanduser()
+    out = []
+    for p in root.rglob("*"):
+        rel = p.relative_to(root)
+        if not p.is_file() or any(part.startswith(".") for part in rel.parts):
+            continue
+        out.append(("./" + rel.as_posix(), p))
+    return sorted(out, key=lambda t: t[0].encode())
+
+
+def tree_manifest(local_dir) -> str:
+    """The `sha256sum` listing of local_dir, in the exact format
+    _REMOTE_MANIFEST prints for the node's copy."""
+    return "\n".join(f"{hashlib.sha256(p.read_bytes()).hexdigest()}  {rel}"
+                     for rel, p in _tree_files(local_dir))
+
+
+def _remote_manifest_cmd(remote_dir: str) -> str:
+    return (f"cd {shlex.quote(remote_dir)} 2>/dev/null && "
+            "find . -type f -print0 | LC_ALL=C sort -z | xargs -0 -r sha256sum")
+
+
+def push_tree(conn: NodeConn, local_dir, remote_dir: str) -> bool:
+    """Make remote_dir an exact mirror of local_dir: same files, same
+    content, nothing extra. Returns True if anything changed.
+
+    Compared by a sha256sum listing of both sides, so an unchanged tree is a
+    no-op. On a change the whole tree goes over as one tar (via push_binary,
+    so it's staged and privileged like any other upload) and replaces the
+    directory's CONTENTS. The directory itself is kept, since a container may
+    have it bind-mounted. Files land 0644 root-owned, dirs 0755, so a
+    container running as a non-root user can read them.
+    """
+    import io
+    import os
+    import tarfile
+    import tempfile
+
+    want = tree_manifest(local_dir)
+    r = conn.run(_remote_manifest_cmd(remote_dir))
+    if r.ok and r.out.strip() == want:
+        return False
+
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tar:
+        for rel, p in _tree_files(local_dir):
+            data = p.read_bytes()
+            info = tarfile.TarInfo(rel)
+            info.size, info.mode, info.mtime = len(data), 0o644, 0
+            tar.addfile(info, io.BytesIO(data))
+    fd, tmp = tempfile.mkstemp(suffix=".tar", prefix="akropolis-tree-")
+    staged = remote_dir.rstrip("/") + ".akropolis.tar"
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(buf.getvalue())
+        push_binary(conn, tmp, staged, mode="0600")
+    finally:
+        os.unlink(tmp)
+
+    d, t = shlex.quote(remote_dir), shlex.quote(staged)
+    r = conn.run(f"mkdir -p {d} && find {d} -mindepth 1 -delete && "
+                 f"tar -xf {t} -C {d} --no-same-owner && "
+                 f"chmod -R u=rwX,go=rX {d}; rc=$?; rm -f {t}; exit $rc", timeout=120)
+    if not r.ok:
+        raise RuntimeError(f"[{conn.node.name}] failed to install {remote_dir}: {r.err}")
+    r = conn.run(_remote_manifest_cmd(remote_dir))
+    if r.out.strip() != want:
+        raise RuntimeError(f"[{conn.node.name}] {remote_dir}: contents differ from "
+                           f"{local_dir} after upload — transfer corrupted")
+    return True
+
+
 def wait_for(conn: NodeConn, cmd: str, expect: str | None = None,
              timeout: float = 120.0, interval: float = 5.0,
              label: str = "", tick=None) -> bool:

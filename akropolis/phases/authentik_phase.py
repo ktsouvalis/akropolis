@@ -53,7 +53,8 @@ import secrets as pysecrets
 import shlex
 from pathlib import Path
 
-from ..remote import base_url, push_binary, push_file, render, wait_for
+from ..remote import (base_url, push_binary, push_file, push_tree, render,
+                      tree_manifest, wait_for)
 from .base import Phase, PhaseContext, console
 
 HEALTHY = ("docker inspect -f '{{.State.Health.Status}}' authentik-server-1 "
@@ -145,6 +146,48 @@ def email_logo_volume(ctx, node: str, remote: str) -> list[str]:
                    warn=True)
         return []
     return [f"{remote}:{EMAIL_LOGO_PATH}:ro"]
+
+
+# authentik.custom_templates: a directory on the workstation, mirrored to
+# CUSTOM_TEMPLATES_DIR on every node, which both compose files mount at
+# /templates in server AND worker (the worker sends mail and renders
+# notification emails). /templates is TEMPLATES.DIRS[0] (email.template_dir),
+# which Django searches BEFORE the app templates, so a file at
+# email/password_reset.html there replaces the stock password-reset email
+# outright; any other *.html shows up in the email stage's template dropdown
+# as "Custom Template: <name>". Unset → the directory is left alone.
+CUSTOM_TEMPLATES_DIR = "/opt/authentik/custom-templates"
+
+
+def push_custom_templates(ctx, conns) -> set[str]:
+    """Mirror authentik.custom_templates to every node; returns the nodes
+    whose copy changed. Those need a container recreate: Django caches
+    compiled templates in-process, so a running container keeps the old ones."""
+    src = str((ctx.cfg.raw.get("authentik") or {}).get("custom_templates") or "").strip()
+    if not src:
+        return set()
+    local = Path(src).expanduser()
+    if not local.is_dir():
+        raise RuntimeError(f"authentik.custom_templates is not a directory: {local}")
+    count = len(tree_manifest(local).splitlines())
+    touched: set[str] = set()
+    for conn in conns:
+        changed = push_tree(conn, local, CUSTOM_TEMPLATES_DIR)
+        if changed:
+            touched.add(conn.node.name)
+        ctx.record(conn.node.name, "custom templates", True,
+                   f"{count} file(s) → {CUSTOM_TEMPLATES_DIR}"
+                   + ("" if changed else " (unchanged)"))
+    return touched
+
+
+def custom_templates_plan(acfg: dict) -> list[str]:
+    src = str(acfg.get("custom_templates") or "").strip()
+    if not src:
+        return []
+    return [f"custom templates: mirror {src} to {CUSTOM_TEMPLATES_DIR} on every node "
+            "(mounted at /templates in server and worker); a file at "
+            "email/password_reset.html replaces the stock password-reset email"]
 
 
 def find_default_brand_uuid(ctx, conn, token: str, port: int = 9443) -> str:
@@ -443,6 +486,7 @@ class AuthentikPhase(Phase):
                 lines.append(f"email logo: mount the logo over {EMAIL_LOGO_PATH} in the "
                              "worker (authentik attaches that file to every email; "
                              "PNG only)")
+        lines += custom_templates_plan(self._acfg(ctx))
         lines.append("verify: server+worker healthy on all nodes, /-/health/ready/ 200 "
                      "per node, API answers with the bootstrap token")
         return lines
@@ -475,6 +519,7 @@ class AuthentikPhase(Phase):
         # uploads happen before the compose file is rendered, so the mounts
         # in it always refer to files that are already on the node
         branding, branding_worker, branding_touched = self._branding_volumes(ctx)
+        templates_touched = push_custom_templates(ctx, ctx.fleet.conns)
         compose = render("authentik-compose.yml.j2",
                          extra_server_volumes=branding
                          + list(acfg.get("extra_server_volumes", []) or []),
@@ -491,7 +536,8 @@ class AuthentikPhase(Phase):
             c1 = push_file(conn, env, "/opt/authentik/.env", mode="0600")
             c2 = push_file(conn, compose, "/opt/authentik/docker-compose.yml")
             c3 = push_file(conn, unit, "/etc/systemd/system/authentik-compose.service")
-            changed[node] = c1 or c2 or c3 or node in branding_touched
+            changed[node] = (c1 or c2 or c3 or node in branding_touched
+                             or node in templates_touched)
             r = conn.run("systemctl daemon-reload && systemctl enable authentik-compose")
             ctx.record(node, "config + unit rendered", r.ok,
                        ("changed" if changed[node] else "unchanged") if r.ok else r.err)

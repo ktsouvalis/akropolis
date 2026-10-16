@@ -179,6 +179,17 @@ def run_wizard(output: str | None = None) -> Path:
     if branding:
         authentik_extra["branding"] = branding
 
+    # Same idea for email templates: a directory on the workstation, mirrored
+    # to every node and mounted at /templates. email/password_reset.html in
+    # it replaces the stock password-reset email (e.g. a translated one).
+    templates = input("path to a custom email templates directory on this machine "
+                      "(e.g. ./custom-templates; Enter to skip): ").strip()
+    if templates:
+        if not Path(templates).expanduser().is_dir():
+            console.print(f"[yellow]{templates} is not a directory — skipping[/yellow]")
+        else:
+            authentik_extra["custom_templates"] = templates
+
     monitor_prompt = ("monitoring host IP(s)/CIDR(s), comma-separated (allowed through "
                       "UFW to Patroni/etcd/HAProxy/Authentik ports; Enter to skip)"
                       if topology == "ha" else

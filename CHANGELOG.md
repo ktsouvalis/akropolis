@@ -11,6 +11,24 @@ dead ends.
 
 ## [Unreleased]
 
+## [2.10.0] - 2026-10-16
+
+### Added
+
+- `authentik.custom_templates`: a local directory of email templates, asked
+  for by `akro init`. The authentik phase mirrors it to
+  `/opt/authentik/custom-templates` on every node, and the containers are
+  recreated when it changes. `email/password_reset.html` in it replaces the
+  stock password-reset email.
+
+### Changed
+
+- The worker now mounts `/opt/authentik/custom-templates` at `/templates`
+  too, like the server and authentik's reference compose. The worker sends
+  mail and renders notification emails, so before this it never saw custom
+  templates. On a running HA cluster the next apply of the authentik phase
+  does a rolling restart for this.
+
 ## [2.9.2] - 2026-09-30
 
 ### Fixed

@@ -221,6 +221,15 @@ authentik:
   #   logo: ./branding/logo.png
   #   favicon: ./branding/favicon.png
   #   background: ./branding/background.jpg
+  # Custom email templates: a directory on THIS workstation, mirrored exactly
+  # (files removed locally are removed on the nodes; dotfiles are skipped) to
+  # /opt/authentik/custom-templates on every node, mounted at /templates in
+  # both server and worker. Django looks there before authentik's own
+  # templates, so email/password_reset.html replaces the stock password-reset
+  # email (a .txt next to it replaces the plain-text part). Any other *.html
+  # can be selected in an email stage as "Custom Template: <name>".
+  # A change recreates the containers (Django caches compiled templates).
+  # custom_templates: ./custom-templates
   # SMTP for password resets / email stages (guide 7.x .env block).
   # Omit the whole section → the authentik phase asks interactively and pins
   # the answers in state. `enabled: false` → no email block, no questions.

@@ -54,8 +54,9 @@ from pathlib import Path
 
 from ..config import resolved_backup_ips, resolved_backup_localhost
 from ..remote import base_url, push_binary, push_file, render
-from .authentik_phase import (BRAND_FIELDS, EMAIL_LOGO_PATH, apply_brand, dump_logs,
-                              email_logo_volume, pin_applied_tag,
+from .authentik_phase import (BRAND_FIELDS, EMAIL_LOGO_PATH, apply_brand,
+                              custom_templates_plan, dump_logs, email_logo_volume,
+                              pin_applied_tag, push_custom_templates,
                               tag_change_warning, wait_healthy)
 from .base import Phase, PhaseContext
 from .base_setup import BACKUP_PORT
@@ -230,6 +231,7 @@ class AuthentikSinglePhase(Phase):
                 lines.append(f"email logo: mount the logo over {EMAIL_LOGO_PATH} in the "
                              "worker (authentik attaches that file to every email; "
                              "PNG only)")
+        lines += custom_templates_plan(acfg)
         lines.append("install authentik-compose.service (systemd, After=docker.service "
                      "network-online.target) and enable it — restart: \"no\" in compose "
                      "means dockerd no longer restarts containers directly on boot ahead "
@@ -281,6 +283,9 @@ class AuthentikSinglePhase(Phase):
         node = conn.node.name
         conn.run("mkdir -p /opt/authentik/data /opt/authentik/certs "
                  "/opt/authentik/custom-templates")
+        # no change tracking, same as branding: the full restart below also
+        # drops Django's in-process template cache
+        push_custom_templates(ctx, [conn])
         c1 = push_file(conn, env, "/opt/authentik/.env", mode="0600")
         c2 = push_file(conn, compose, "/opt/authentik/docker-compose.yml")
         c3 = push_file(conn, unit, "/etc/systemd/system/authentik-compose.service")

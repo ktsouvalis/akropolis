@@ -87,6 +87,7 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
       - /opt/authentik/data:/media
       - /opt/authentik/certs:/certs
+      - /opt/authentik/custom-templates:/templates
 {% for v in extra_worker_volumes %}
       - {{ v }}
 {% endfor %}
