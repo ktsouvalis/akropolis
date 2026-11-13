@@ -11,6 +11,27 @@ dead ends.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`akro logs` no longer reports an unreadable container as clean.** It
+  piped `docker logs ... 2>&1` through the level grep and ignored the exit
+  status, so when the SSH user could not reach the Docker socket ("permission
+  denied") or the container name was wrong, docker's own error was filtered
+  out with everything else and the service showed "clean" / "no warnings or
+  errors". Found on a single-node site where the SSH user was not in the
+  `docker` group: every container looked clean while the server had real
+  errors. A probe (`docker inspect`) now runs first and exits 125 when the
+  source can't be read; the service is shown as `ERROR, cannot read logs:
+  <docker's message>` with a fix hint (the `docker` group, or the container
+  name), in the TUI, on stdout and in the `--save` report.
+
+### Changed
+
+- README: `akro monitor` / `akro logs` work on both topologies (they have
+  since the single-node panels landed); the "ha only" notes are gone. New
+  note on the Docker permission the SSH user needs, and what granting the
+  `docker` group means.
+
 ## [2.10.0] - 2026-10-16
 
 ### Added

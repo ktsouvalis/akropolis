@@ -183,9 +183,9 @@ akro ldap-reconcile CONFIG     repoint Authentik LDAP source identifiers that
   --source SLUG                        only reconcile this LDAP source slug
                                         (default: every configured LDAP source)
 
-akro monitor CONFIG            real-time cluster health dashboard (ha topology only)
+akro monitor CONFIG            real-time health dashboard (ha and single)
 
-akro logs CONFIG               cluster-wide log viewer over SSH (ha topology only)
+akro logs CONFIG               log viewer over SSH, every node (ha and single)
   --last HOURS                         hours of logs to fetch (default: 24)
   --level {debug,info,warning,error}   minimum severity to include (default: warning)
   --save FILE                          write a plain-text report to FILE instead of
@@ -657,9 +657,9 @@ itself.
 
 ## Monitoring
 
-`ha` topology only for now; single-node's smaller schema is not yet
-understood by `akro monitor`/`akro logs`. The `handoff` phase
-already emitted `config.<site>.monitor.yml` on your workstation; point both
+Both topologies. On `single` the dashboard shows the panels that exist
+there (Authentik, workers and task queue, nginx), with no VIP, keepalived,
+HAProxy, Patroni or etcd. The `handoff` phase already emitted `config.<site>.monitor.yml` on your workstation; point both
 commands at that file, not at `config.<site>.yml`.
 
 ### `akro monitor`
@@ -721,6 +721,23 @@ Needs SSH access to every node (`ssh.username` and `ssh.key_file` in the
 monitor config), plus the Docker CLI and `journalctl` on the nodes that run
 them. Which services get polled is config, not code — see the `services:`
 block the `handoff` phase renders into the monitor config.
+
+**The SSH user must be able to read Docker.** `docker logs` needs access to
+`/var/run/docker.sock`, which a plain user only has as a member of the
+`docker` group. If it can't, that service is reported as an error, never as
+clean:
+
+```
+[1/4] auth-1 / Auth Server: ERROR, cannot read logs: permission denied while trying to connect to the docker API at unix:///var/run/docker.sock
+      → add the SSH user to the docker group on that node (sudo usermod -aG docker <user>, then reconnect). The docker group is root-equivalent: grant it knowingly.
+```
+
+The same applies to a container name that doesn't exist (`no such object`).
+Membership of the `docker` group is equivalent to root on that node, so a
+stolen key for that user reaches root without the sudo password. For a user
+that already has full sudo it adds no new power, only the password prompt
+goes away. Bare-metal services are read with `journalctl`, which needs the
+`adm` or `systemd-journal` group to see system units.
 
 ### Adjusting scheme / TLS
 

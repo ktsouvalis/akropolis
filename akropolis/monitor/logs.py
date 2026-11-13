@@ -38,6 +38,39 @@ LOG_LEVELS = {
 }
 DEFAULT_LOG_LEVEL = "warning"
 
+# Exit code the remote command uses when the log source itself cannot be read
+# (docker refused the socket, no such container). Without it, the level grep
+# below swallows docker's own error message, the output comes back empty, and
+# an unreadable container is reported as "no warnings or errors": a false
+# "clean" that looks exactly like a healthy service.
+SOURCE_ERROR_RC = 125
+
+
+class LogSourceError(RuntimeError):
+    """The node answered over SSH, but the log source could not be read."""
+
+
+def source_error_hint(message: str) -> str:
+    """A one-line fix for the source errors we know, or "" for the rest."""
+    m = message.lower()
+    if "permission denied" in m and "docker" in m:
+        return ("add the SSH user to the docker group on that node "
+                "(sudo usermod -aG docker <user>, then reconnect). "
+                "The docker group is root-equivalent: grant it knowingly.")
+    if "no such container" in m or "no such object" in m:
+        return "check the container name in the monitor config's services: block"
+    return ""
+
+
+def format_fetch_error(exc: Exception) -> str:
+    """Text shown for a service whose logs could not be fetched."""
+    if isinstance(exc, LogSourceError):
+        message = str(exc).strip() or "log source unreadable"
+        text = f"cannot read logs: {message.splitlines()[0]}"
+        hint = source_error_hint(message)
+        return f"{text}\n→ {hint}" if hint else text
+    return f"SSH error: {exc}"
+
 CSS = """\
 Screen { background: $surface; }
 TabbedContent { height: 1fr; }
@@ -96,7 +129,16 @@ def build_node_map(config, services):
 
 
 def docker_log_cmd(container, hours, level=DEFAULT_LOG_LEVEL):
-    cmd = f"docker logs --since {hours}h {container} 2>&1"
+    # Probe first: `docker logs ... 2>&1 | grep` cannot tell docker's own
+    # error from container output, and the pipeline's status is tail's. The
+    # probe sends docker's message to stderr and exits SOURCE_ERROR_RC, which
+    # ssh_run turns into LogSourceError. POSIX sh, so it works whatever the
+    # SSH user's login shell is.
+    probe = (
+        f"if ! _akro_err=$(docker inspect --format '{{{{.Id}}}}' {container} 2>&1 >/dev/null); "
+        f"then printf '%s\\n' \"$_akro_err\" >&2; exit {SOURCE_ERROR_RC}; fi; "
+    )
+    cmd = probe + f"docker logs --since {hours}h {container} 2>&1"
     pattern = LOG_LEVELS[level]["grep"]
     if pattern:
         cmd += f" | grep -iE '{pattern}'"
@@ -134,8 +176,12 @@ def ssh_run(ip, user, pkey, cmd, timeout=30):
     client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
     client.connect(ip, username=user, pkey=pkey, timeout=10, auth_timeout=10)
     try:
-        _, stdout, _ = client.exec_command(cmd, timeout=timeout)
-        return stdout.read().decode("utf-8", errors="replace").strip()
+        _, stdout, stderr = client.exec_command(cmd, timeout=timeout)
+        output = stdout.read().decode("utf-8", errors="replace").strip()
+        errors = stderr.read().decode("utf-8", errors="replace").strip()
+        if stdout.channel.recv_exit_status() == SOURCE_ERROR_RC:
+            raise LogSourceError(errors)
+        return output
     finally:
         client.close()
 
@@ -172,7 +218,7 @@ def run_save(config, services, filename, hours, level=DEFAULT_LOG_LEVEL):
             output = ssh_run(ip, ssh_user, ssh_key, cmd)
             return (node_name, label), output, None
         except Exception as exc:
-            return (node_name, label), "", str(exc)
+            return (node_name, label), "", format_fetch_error(exc)
 
     total = len(tasks)
     print(f"Fetching logs from {len(node_map)} nodes ({total} service queries)…")
@@ -182,7 +228,7 @@ def run_save(config, services, filename, hours, level=DEFAULT_LOG_LEVEL):
             results[key] = (output, error)
             node_name, label = key
             if error:
-                status = "SSH error"
+                status = "ERROR, " + error.replace("\n", "\n      ")
             elif output:
                 status = f"{len(output.splitlines())} lines"
             else:
@@ -203,7 +249,8 @@ def run_save(config, services, filename, hours, level=DEFAULT_LOG_LEVEL):
                 f.write("  " + "─" * 60 + "\n")
                 output, error = results.get((node_name, label), ("", "not fetched"))
                 if error:
-                    f.write(f"  SSH error: {error}\n")
+                    for line in error.splitlines():
+                        f.write(f"  {line}\n")
                 elif not output:
                     f.write("  (no warnings or errors in the last 24h)\n")
                 else:
@@ -274,7 +321,7 @@ class LogsApp(App):
                 output = ssh_run(ip, self.ssh_user, self.ssh_key, cmd)
                 return node_name, label, output, None
             except Exception as exc:
-                return node_name, label, "", str(exc)
+                return node_name, label, "", format_fetch_error(exc)
 
         with ThreadPoolExecutor(max_workers=16) as pool:
             for fut in as_completed(pool.submit(fetch_one, t) for t in tasks):
@@ -287,7 +334,8 @@ class LogsApp(App):
         rl = self.query_one(f"#{_log_id(node_name, label)}", RichLog)
         rl.clear()
         if error:
-            rl.write(f"[bold red]SSH error: {escape(error)}[/bold red]")
+            for line in error.splitlines():
+                rl.write(f"[bold red]{escape(line)}[/bold red]")
         elif not output:
             rl.write("[dim italic](no warnings or errors in the last 24h)[/dim italic]")
         else:
