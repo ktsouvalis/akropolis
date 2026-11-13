@@ -49,9 +49,10 @@ jobs:
           tag="${GITHUB_REF_NAME#v}"
           declared="$(grep -m1 '^version = ' pyproject.toml | cut -d'"' -f2)"
           module="$(grep -m1 '^__version__ = ' akropolis/__init__.py | cut -d'"' -f2)"
-          echo "tag=$tag pyproject=$declared module=$module"
-          if [ "$tag" != "$declared" ] || [ "$tag" != "$module" ]; then
-            echo "::error::version mismatch — tag $tag, pyproject $declared, module $module"
+          plugin="$(python -c 'import json; print(json.load(open(".claude-plugin/plugin.json"))["version"])')"
+          echo "tag=$tag pyproject=$declared module=$module plugin=$plugin"
+          if [ "$tag" != "$declared" ] || [ "$tag" != "$module" ] || [ "$tag" != "$plugin" ]; then
+            echo "::error::version mismatch — tag $tag, pyproject $declared, module $module, plugin.json $plugin"
             exit 1
           fi
 

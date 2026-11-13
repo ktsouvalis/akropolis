@@ -23,6 +23,17 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
+      # The skill marketplace installs from main, and Claude Code only updates
+      # an installed plugin when plugin.json's version changes: keep it in step.
+      - name: plugin.json version must match pyproject
+        run: |
+          declared="$(grep -m1 '^version = ' pyproject.toml | cut -d'"' -f2)"
+          plugin="$(python -c 'import json; print(json.load(open(".claude-plugin/plugin.json"))["version"])')"
+          if [ "$declared" != "$plugin" ]; then
+            echo "::error::version mismatch — pyproject $declared, plugin.json $plugin"
+            exit 1
+          fi
+
       - name: Install akropolis with test dependencies
         run: python -m pip install --quiet -e ".[test]"
 
