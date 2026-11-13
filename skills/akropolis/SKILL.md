@@ -19,7 +19,7 @@ and runs from the operator's workstation. It has two topologies, set by
 Upstream: https://github.com/ktsouvalis/akropolis. The README of the
 installed version is the authority, and `NOTES.md` explains the reasoning
 behind each design decision. This skill describes behaviour as of akropolis
-2.10.1; if `akro --version` is newer, read `akro whats-new` before relying on
+2.10.2; if `akro --version` is newer, read `akro whats-new` before relying on
 details here.
 
 ## First: establish the deployment context
@@ -32,7 +32,9 @@ VIPs, site names or paths. Before doing anything site-specific:
    laptop. The state file and transcripts sit next to it.
 2. Read it in full. Note `site.topology`, `site.environment`,
    `site.config_version`, `tls.provider`, `authentik.tag`, and the node list.
-3. Run `akro status config.<site>.yml` (local only, no SSH).
+3. Run `akro status config.<site>.yml` (local only, no SSH). If `akro` is not
+   installed where you are, ask the operator to run it where it is and paste
+   the output. Never read the state file instead.
 4. Check the version: `akro --version`, and `akro check-update`.
    `config_version` must match what the installed release expects, or `load()`
    refuses. When it doesn't, read the CHANGELOG before changing anything.
@@ -66,11 +68,18 @@ completed ones. See `references/phases.md` for details.
 - **Treat the state file as a secret store.** `.state/<site>.json` holds
   plaintext secrets: Authentik secret key, akadmin password, API token, all
   Postgres passwords, the HAProxy stats password, the etcd token and the VRRP
-  pass. Never print, paste, commit or upload it. Use `akro status`.
+  pass. Never open it: no Read, `cat`, `grep`, `jq` or parsing, not even to
+  see its keys or phase statuses, because reading it puts every secret into
+  the conversation. Never print, paste, commit or upload it either. Use
+  `akro status`. The same goes for `config.<site>.monitor.yml`, which holds
+  the API token inline. If either file is in your working directory, say so
+  (it should be 0600 and kept off shared or synced folders) and leave it
+  unread.
 - **Pinned values are set once.** The etcd token and generated passwords are
   never rotated by a replay. That is what makes re-runs safe.
 - **Back up before upgrades or restores.** Authentik migrations have no
-  rollback, and akropolis does not take a backup for you. Use `pg_dump`
+  rollback, and akropolis does not take a backup for you. The site may
+  still have backups from another tool: ask before saying it has none. Use `pg_dump`
   against the Patroni leader (ha) or the `postgresql` container (single).
 - **Respect the upgrade path.** akropolis renders whatever `authentik.tag` it
   is given. Check Authentik's release notes for required intermediate

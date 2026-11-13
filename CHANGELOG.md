@@ -11,6 +11,19 @@ dead ends.
 
 ## [Unreleased]
 
+## [2.10.2] - 2026-11-13
+
+### Fixed
+
+- **Agent skill: never open the state file or the monitor file.** The skill
+  said never to *print* `.state/<site>.json`, so an agent without `akro` on
+  its machine read the file "only for its keys and phase statuses", which
+  still puts every secret into the conversation. It now forbids any read of
+  the state file and of `config.<site>.monitor.yml` (the API token is
+  inline), asks the operator to paste `akro status` output when `akro` is not
+  installed, and asks whether the site has backups from another tool before
+  saying it has none. No change to `akro` itself.
+
 ## [2.10.1] - 2026-11-13
 
 ### Fixed
