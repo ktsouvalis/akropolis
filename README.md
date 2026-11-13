@@ -123,6 +123,14 @@ python3 -m venv .venv            # Debian/Ubuntu/Mint: apt install python3-venv 
 Requirements on the **workstation**: Python ≥ 3.10, SSH access to the nodes.
 Requirements on the **nodes**: fresh Ubuntu 24.04, a root-capable SSH user, correct interface MTU (1400 on VXLAN overlays, 1500 on flat L2). Everything else is akropolis's job.
 
+### Agent skill (optional)
+
+An agent skill for Claude Code ships in [`skills/akropolis/`](skills/akropolis/SKILL.md). It reads your own config and `akro status` first, runs preflight before any apply, never answers confirmation prompts for you and never prints the state file. Install it from the [ktsouvalis/skills](https://github.com/ktsouvalis/skills) marketplace:
+
+```
+/plugin install akropolis --marketplace ktsouvalis/skills
+```
+
 ## Quickstart
 
 ```bash
