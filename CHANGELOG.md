@@ -11,6 +11,18 @@ dead ends.
 
 ## [Unreleased]
 
+## [2.10.3] - 2026-11-13
+
+### Fixed
+
+- **Agent skill: stay in the site directory, and prefer live state over
+  notes.** In a test the agent searched the operator's home directory for
+  configs and repeated an out-of-date handoff note as current fact. The
+  skill now looks only in the working directory and then asks, reads files
+  elsewhere only when the operator points to them, treats the config,
+  `akro status` and the hosts as the current truth, and says where each fact
+  came from. No change to `akro` itself.
+
 ## [2.10.2] - 2026-11-13
 
 ### Fixed

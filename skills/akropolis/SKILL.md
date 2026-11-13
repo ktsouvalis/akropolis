@@ -19,7 +19,7 @@ and runs from the operator's workstation. It has two topologies, set by
 Upstream: https://github.com/ktsouvalis/akropolis. The README of the
 installed version is the authority, and `NOTES.md` explains the reasoning
 behind each design decision. This skill describes behaviour as of akropolis
-2.10.2; if `akro --version` is newer, read `akro whats-new` before relying on
+2.10.3; if `akro --version` is newer, read `akro whats-new` before relying on
 details here.
 
 ## First: establish the deployment context
@@ -29,7 +29,10 @@ VIPs, site names or paths. Before doing anything site-specific:
 
 1. Find the site config, `config.<site>.yml`. Ask the operator which machine
    and directory hold it; it is often a management host, not the operator's
-   laptop. The state file and transcripts sit next to it.
+   laptop. The state file and transcripts sit next to it. Look in the working
+   directory, then ask. Do not search the home directory or the rest of the
+   filesystem for it, and do not read notes or other files outside that
+   directory unless the operator points you to them.
 2. Read it in full. Note `site.topology`, `site.environment`,
    `site.config_version`, `tls.provider`, `authentik.tag`, and the node list.
 3. Run `akro status config.<site>.yml` (local only, no SSH). If `akro` is not
@@ -38,6 +41,11 @@ VIPs, site names or paths. Before doing anything site-specific:
 4. Check the version: `akro --version`, and `akro check-update`.
    `config_version` must match what the installed release expects, or `load()`
    refuses. When it doesn't, read the CHANGELOG before changing anything.
+
+The config, `akro status` and the hosts themselves are the current truth.
+Notes, handoff documents and old transcripts may be out of date: say where
+each fact came from, and when a note disagrees with the config or status,
+ask instead of choosing.
 
 If there is no config yet, the task is a new site. Start with `akro init`.
 
