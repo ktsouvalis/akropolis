@@ -11,6 +11,8 @@ dead ends.
 
 ## [Unreleased]
 
+## [2.10.1] - 2026-11-13
+
 ### Fixed
 
 - **`akro logs` no longer reports an unreadable container as clean.** It

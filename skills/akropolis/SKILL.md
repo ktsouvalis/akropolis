@@ -19,7 +19,7 @@ and runs from the operator's workstation. It has two topologies, set by
 Upstream: https://github.com/ktsouvalis/akropolis. The README of the
 installed version is the authority, and `NOTES.md` explains the reasoning
 behind each design decision. This skill describes behaviour as of akropolis
-2.10.0 plus the unreleased `akro logs` fix; if `akro --version` is newer, read `akro whats-new` before relying on
+2.10.1; if `akro --version` is newer, read `akro whats-new` before relying on
 details here.
 
 ## First: establish the deployment context

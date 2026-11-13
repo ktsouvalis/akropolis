@@ -1,7 +1,7 @@
 {
   "name": "akropolis",
   "description": "Skill for operating akropolis: provision and run an Authentik identity provider (3-node HA or single node) over SSH.",
-  "version": "2.10.0",
+  "version": "2.10.1",
   "author": { "name": "Konstantinos Tsouvalis" },
   "homepage": "https://github.com/ktsouvalis/akropolis",
   "repository": "https://github.com/ktsouvalis/akropolis",
