@@ -212,7 +212,8 @@ class CleanPhase(Phase):
             ctx.record("workstation", "state archived + removed", True, str(archive))
             # this in-memory State would re-save pinned secrets on any later
             # mark; point it at the (now absent) path with a fresh dict
-            ctx.state.data = {"site": ctx.cfg.name, "phases": {}, "generated": {}}
+            ctx.state.data = {"tool": "akropolis", "site": ctx.cfg.name,
+                              "phases": {}, "generated": {}}
         else:
             ctx.record("workstation", "state file", True, "already absent")
 

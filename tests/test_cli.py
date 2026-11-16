@@ -8,7 +8,10 @@ from types import SimpleNamespace
 import pytest
 import yaml
 
-from akropolis.cli import cmd_status, phase_rows, pipeline_for
+import json
+
+from akropolis import state as state_mod
+from akropolis.cli import cmd_state, cmd_status, phase_rows, pipeline_for
 from akropolis.config import CONFIG_SCHEMA_VERSION
 from akropolis.state import State
 
@@ -134,3 +137,80 @@ def test_status_bad_config_reports_problems(tmp_path, capsys):
     rc = cmd_status(SimpleNamespace(config=str(bad_path)))
     assert rc == 2
     assert "config problems" in capsys.readouterr().out
+
+
+# --- encrypted state: status without a passphrase, `state` subcommand ----------
+
+PW = "correct horse battery"
+
+
+@pytest.fixture
+def pinned_site(write_config, tmp_path, monkeypatch):
+    """A site whose state holds one pinned secret, encrypted with PW."""
+    monkeypatch.setattr(state_mod, "SCRYPT_N", 2 ** 10)
+    monkeypatch.delenv(state_mod.PASSPHRASE_ENV, raising=False)
+    config_path = write_config()
+    st = State(tmp_path / "site.json", "test-single", PW)
+    st.unlock()
+    st.get_or_generate("smtp_password", lambda: "old-smtp-pw")
+    st.mark_phase("preflight", "done")
+    return config_path, tmp_path / "site.json"
+
+
+def _state_args(config_path, action, key=None):
+    return SimpleNamespace(config=str(config_path), action=action, key=key,
+                           passphrase_file=None)
+
+
+def test_status_works_without_passphrase(pinned_site, capsys):
+    config_path, _ = pinned_site
+    assert cmd_status(SimpleNamespace(config=str(config_path))) == 0
+    out = capsys.readouterr().out
+    assert "pinned values (encrypted): smtp_password" in out
+    assert "old-smtp-pw" not in out
+
+
+def test_status_warns_on_plaintext_file(write_config, tmp_path, capsys):
+    config_path = write_config()
+    (tmp_path / "site.json").write_text(json.dumps(
+        {"site": "test-single", "phases": {}, "generated": {"k": "plain"}}))
+    assert cmd_status(SimpleNamespace(config=str(config_path))) == 0
+    assert "state encrypt" in capsys.readouterr().out
+
+
+def test_state_encrypt_migrates_plaintext(write_config, tmp_path, monkeypatch):
+    monkeypatch.setattr(state_mod, "SCRYPT_N", 2 ** 10)
+    monkeypatch.setenv(state_mod.PASSPHRASE_ENV, PW)
+    config_path = write_config()
+    sf = tmp_path / "site.json"
+    sf.write_text(json.dumps({"site": "test-single", "phases": {},
+                              "generated": {"k": "plain-secret"}}))
+    assert cmd_state(_state_args(config_path, "encrypt")) == 0
+    assert "plain-secret" not in sf.read_text()
+    st = State(sf, "test-single", PW)
+    st.unlock()
+    assert st.data["generated"] == {"k": "plain-secret"}
+
+
+def test_state_get_and_set(pinned_site, monkeypatch, capsys):
+    config_path, sf = pinned_site
+    monkeypatch.setenv(state_mod.PASSPHRASE_ENV, PW)
+    monkeypatch.setattr("getpass.getpass", lambda _prompt="": "new-smtp-pw")
+    assert cmd_state(_state_args(config_path, "set", "smtp_password")) == 0
+    capsys.readouterr()
+    assert cmd_state(_state_args(config_path, "get", "smtp_password")) == 0
+    assert capsys.readouterr().out.strip() == "new-smtp-pw"
+    assert "new-smtp-pw" not in sf.read_text()
+
+
+def test_state_unknown_key(pinned_site, monkeypatch):
+    config_path, _ = pinned_site
+    monkeypatch.setenv(state_mod.PASSPHRASE_ENV, PW)
+    assert cmd_state(_state_args(config_path, "get", "nope")) == 2
+
+
+def test_state_wrong_passphrase(pinned_site, monkeypatch, capsys):
+    config_path, _ = pinned_site
+    monkeypatch.setenv(state_mod.PASSPHRASE_ENV, "wrong passphrase!!")
+    assert cmd_state(_state_args(config_path, "get", "smtp_password")) == 2
+    assert "wrong passphrase" in capsys.readouterr().out

@@ -74,15 +74,22 @@ completed ones. See `references/phases.md` for details.
   apply on a new or changed site. It is read-only and safe on production,
   where it should refuse with "existing cluster artifacts".
 - **Treat the state file as a secret store.** `.state/<site>.json` holds
-  plaintext secrets: Authentik secret key, akadmin password, API token, all
+  every pinned secret: Authentik secret key, akadmin password, API token, all
   Postgres passwords, the HAProxy stats password, the etcd token and the VRRP
-  pass. Never open it: no Read, `cat`, `grep`, `jq` or parsing, not even to
-  see its keys or phase statuses, because reading it puts every secret into
-  the conversation. Never print, paste, commit or upload it either. Use
+  pass. Since 2.11.0 they are encrypted with the operator's state passphrase,
+  but an old file may still be plain text. Never open it: no Read, `cat`,
+  `grep`, `jq` or parsing, not even to see its keys or phase statuses, because
+  reading it can put every secret into the conversation. Never print, paste, commit or upload it either. Use
   `akro status`. The same goes for `config.<site>.monitor.yml`, which holds
   the API token inline. If either file is in your working directory, say so
   (it should be 0600 and kept off shared or synced folders) and leave it
   unread.
+- **The state passphrase is the operator's alone.** Never ask for it, accept
+  it in chat, put it in a command line or a file, or set
+  `AKRO_STATE_PASSPHRASE`. Commands that need it (`provision`, `akro state`)
+  prompt in the operator's terminal: prepare them, let the operator run them.
+  Never run `akro state get`: it prints a secret. If `akro status` says the
+  secrets are in plain text, suggest `akro state encrypt CONFIG`.
 - **Pinned values are set once.** The etcd token and generated passwords are
   never rotated by a replay. That is what makes re-runs safe.
 - **Back up before upgrades or restores.** Authentik migrations have no

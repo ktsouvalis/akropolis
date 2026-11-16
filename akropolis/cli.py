@@ -4,6 +4,8 @@
     akro provision config.yml      # phase runner (resumable)
     akro provision config.yml --replay preflight
     akro status    config.yml      # phase-by-phase status (state file only, no SSH)
+    akro state encrypt config.yml  # encrypt an old plaintext state file
+    akro state set config.yml KEY  # re-pin one value (hidden prompt)
     akro shutdown  config.yml      # gracefully stop the authentik backend(s)
     akro start      config.yml     # bring them back — requires a prior shutdown
     akro clean     config.yml      # tear the site down to bare VMs
@@ -20,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import getpass
+import json
 import sys
 import time
 from pathlib import Path
@@ -53,9 +56,12 @@ from .phases.patroni_phase import PatroniPhase
 from .phases.preflight import PreflightPhase
 from .phases.restore_phase import RestorePhase
 from .sshexec import Fleet
-from .state import State
+from .state import State, StateLocked, passphrase_source
 
 console = Console()
+
+PASSPHRASE_HELP = ("read the state passphrase from FILE (default: the "
+                   "AKRO_STATE_PASSPHRASE env var, else a prompt)")
 
 # Ordered phase pipeline — topology-dependent. `ha` is the full 3-node stack;
 # `single` drops etcd/Patroni/HAProxy/keepalived entirely (see config.py
@@ -137,6 +143,19 @@ def _preauth_sudo(cfg: SiteConfig, fleet: Fleet, password: str | None) -> bool:
     return False
 
 
+def _unlocked_state(cfg: SiteConfig, args: argparse.Namespace) -> State | None:
+    """Load the site state and decrypt its pinned values (asks for the
+    passphrase, or a new one on a site with nothing encrypted yet)."""
+    state = State(cfg.state_file, cfg.name,
+                  passphrase_source(getattr(args, "passphrase_file", None), cfg.name))
+    try:
+        state.unlock()
+    except (StateLocked, OSError) as exc:
+        console.print(f"[red]{exc}[/red]")
+        return None
+    return state
+
+
 def cmd_init(args: argparse.Namespace) -> int:
     run_wizard(args.output)
     return 0
@@ -151,7 +170,9 @@ def cmd_provision(args: argparse.Namespace) -> int:
             console.print(f"  ✘ {p}")
         return 2
 
-    state = State(cfg.state_file, cfg.name)
+    state = _unlocked_state(cfg, args)
+    if state is None:
+        return 2
     transcript = Transcript(_transcript_path(cfg, "provision"))
     console.print(f"[dim]transcript: {transcript.path} "
                   "(every command run on every node this session — mode 0600)[/dim]")
@@ -247,6 +268,12 @@ def cmd_status(args: argparse.Namespace) -> int:
     console.print(f"state file: {cfg.state_file}")
     if not cfg.state_file.exists():
         console.print("[dim](doesn't exist yet — nothing provisioned)[/dim]")
+    elif state.plaintext_on_disk:
+        console.print("[yellow]pinned secrets are in plain text — run "
+                      f"`akro state encrypt {args.config}`[/yellow]")
+    elif state.encrypted:
+        console.print(f"[dim]pinned values (encrypted): "
+                      f"{', '.join(state.generated_keys())}[/dim]")
     console.print()
 
     table = Table(box=None, pad_edge=False)
@@ -476,6 +503,58 @@ def cmd_whats_new(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_state(args: argparse.Namespace) -> int:
+    """encrypt / passwd / set / get on the pinned values of one site."""
+    try:
+        cfg = load(args.config)
+    except ConfigError as exc:
+        console.print("[red]config problems:[/red]")
+        for p in exc.problems:
+            console.print(f"  ✘ {p}")
+        return 2
+    if not cfg.state_file.exists():
+        console.print(f"[red]no state file at {cfg.state_file}[/red]")
+        return 2
+    state = _unlocked_state(cfg, args)
+    if state is None:
+        return 2
+    gen = state.data["generated"]
+
+    if args.action == "encrypt":
+        state.save()
+        console.print(f"[green]{cfg.state_file}: {len(gen)} pinned value(s) encrypted.[/green] "
+                      "Delete or encrypt any plain copies (.bak, .cleaned-*), and "
+                      "remember older copies stay in backups until they expire.")
+        return 0
+    if args.action == "passwd":
+        state.change_passphrase()
+        console.print("[green]passphrase changed.[/green]")
+        return 0
+
+    if args.key not in gen:
+        console.print(f"[red]no pinned value {args.key!r}.[/red] Pinned: "
+                      + ", ".join(sorted(gen)))
+        return 2
+    if args.action == "get":
+        value = gen[args.key]
+        print(value if isinstance(value, str) else json.dumps(value))
+        return 0
+    # set
+    if not isinstance(gen[args.key], str):
+        console.print(f"[red]{args.key} is not a plain string value; refusing to "
+                      "overwrite it from a prompt.[/red]")
+        return 2
+    value = getpass.getpass(f"new value for {args.key}: ")
+    if not value or getpass.getpass("repeat it: ") != value:
+        console.print("[yellow]empty or not matching — nothing changed.[/yellow]")
+        return 1
+    gen[args.key] = value
+    state.save()
+    console.print(f"[green]{args.key} re-pinned.[/green] Replay the phase that "
+                  "renders it (e.g. `--replay authentik`) to apply it on the nodes.")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="akro", description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -488,6 +567,7 @@ def main(argv: list[str] | None = None) -> int:
 
     p_prov = sub.add_parser("provision", help="run the phase pipeline against a site")
     p_prov.add_argument("config", help="path to config.<site>.yml")
+    p_prov.add_argument("--passphrase-file", metavar="FILE", help=PASSPHRASE_HELP)
     p_prov.add_argument("--replay", nargs="+", metavar="PHASE",
                         help="re-run specific completed phase(s)")
     p_prov.add_argument("--only", nargs="+", metavar="PHASE",
@@ -498,6 +578,15 @@ def main(argv: list[str] | None = None) -> int:
                               "a site (reads the state file only — no SSH, no prompts)")
     p_status.add_argument("config", help="path to config.<site>.yml")
     p_status.set_defaults(func=cmd_status)
+
+    p_state = sub.add_parser("state", help="manage the encrypted pinned values of a "
+                             "site: encrypt an old plaintext file, change the "
+                             "passphrase, re-pin or show one value")
+    p_state.add_argument("action", choices=["encrypt", "passwd", "set", "get"])
+    p_state.add_argument("config", help="path to config.<site>.yml")
+    p_state.add_argument("key", nargs="?", help="pinned value name (set / get)")
+    p_state.add_argument("--passphrase-file", metavar="FILE", help=PASSPHRASE_HELP)
+    p_state.set_defaults(func=cmd_state)
 
     p_shutdown = sub.add_parser("shutdown", help="gracefully stop the authentik "
                                 "server+worker (ha: on all 3 nodes, other services "
@@ -570,6 +659,8 @@ def main(argv: list[str] | None = None) -> int:
     p_whats_new.set_defaults(func=cmd_whats_new)
 
     args = parser.parse_args(argv)
+    if args.command == "state" and args.action in ("set", "get") and not args.key:
+        parser.error(f"state {args.action} needs a KEY (see `akro status` for the names)")
 
     if args.command not in ("update", "check-update"):
         try:

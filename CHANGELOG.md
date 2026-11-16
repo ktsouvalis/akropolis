@@ -11,6 +11,36 @@ dead ends.
 
 ## [Unreleased]
 
+## [2.11.0] - 2026-11-16
+
+### Added
+
+- The pinned values in the state file are encrypted: a key derived from a
+  passphrase with scrypt, AES-256-GCM over the whole `generated` map, bound
+  to the tool and site name. The site, phase statuses and the names of the
+  pinned values stay readable, so `status`, `shutdown`, `start` and `clean`
+  need no passphrase; `provision` asks for it once (or for a new one, twice,
+  on a site with nothing encrypted yet). Passphrase from
+  `AKRO_STATE_PASSPHRASE`, `--passphrase-file`, or a prompt.
+- `akro state encrypt CONFIG` rewrites an old plaintext state file encrypted;
+  `akro state passwd CONFIG` changes the passphrase; `akro state set CONFIG
+  KEY` re-pins one value from a hidden prompt (replaces hand-editing the
+  file); `akro state get CONFIG KEY` prints one value.
+- `akro status` lists the pinned value names, and warns when a state file
+  still holds secrets in plain text.
+- The state file is stamped `"tool": "akropolis"`, and a file stamped by
+  another tool is refused.
+
+### Changed
+
+- Old plaintext state files still load, and are written back encrypted on the
+  first save after the passphrase is set. A save that would write a pinned
+  secret in plain text is refused.
+- The state file's `.tmp` swap file is created 0600, instead of being
+  chmodded after the rename.
+- The agent skill never asks for, accepts or sets the state passphrase, and
+  never runs `akro state get`; its troubleshooting covers the new state errors.
+
 ## [2.10.3] - 2026-11-13
 
 ### Fixed

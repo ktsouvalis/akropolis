@@ -168,10 +168,20 @@ akro init [-o FILE]            interactive wizard → writes config.<site>.yml
 akro provision CONFIG          run the phase pipeline against a site (resumable)
   --only PHASE [PHASE...]              run only the named phase(s), e.g. --only preflight
   --replay PHASE [PHASE...]            re-run specific completed phase(s)
+  --passphrase-file FILE               state passphrase from FILE (default: the
+                                        AKRO_STATE_PASSPHRASE env var, else a prompt)
 
 akro status CONFIG             phase-by-phase status: which phases are done,
                                        failed, or still pending (reads the state
                                        file only — no SSH, no prompts)
+
+akro state {encrypt,passwd} CONFIG
+                               encrypt an old plaintext state file / change
+                                       the state passphrase
+akro state {get,set} CONFIG KEY
+                               show one pinned value / re-pin it from a hidden
+                                       prompt (names: `akro status`)
+  --passphrase-file FILE               as for provision
 
 akro shutdown CONFIG           gracefully stop the authentik server+worker
                                        (ha: on all 3 nodes, other services left running;
@@ -586,7 +596,7 @@ material without a separate step.
 
 `akro clean config.<site>.yml` tears the whole stack back down to bare VMs (the inverse of the pipeline, for test iteration). Teardown runs in reverse build order (keepalived/VIP first, so nothing routes traffic at a cluster being dismantled; database before its DCS): keepalived → nginx → authentik → haproxy → patroni + **all** PostgreSQL data → etcd + data → TLS material (letsencrypt, webroot, the certbot distribution key and its authorized_keys line) → UFW reset with ssh re-allowed *before* re-enable → the `/etc/hosts` block → restore-dump leftovers in `/tmp`. Packages (docker, postgresql-16, keepalived, certbot) and the hostname are deliberately left alone: apt state belongs to your patching policy, and removing data and config is what makes the next `provision` honest.
 
-Destruction earns the typed-site-name gate in *every* environment, not just production; `site.environment: production` is refused outright unless `--i-know-this-is-production` is also given. The local state file is archived to `.state/<site>.json.cleaned-<timestamp>` (0600, the pinned secrets are your paper trail) and removed, so the next provision regenerates every secret and preflight's `refuse_existing` passes on a genuinely blank slate. Cleaning a half-built node (exactly what a failed provision leaves behind) is a supported case: every step is idempotent.
+Destruction earns the typed-site-name gate in *every* environment, not just production; `site.environment: production` is refused outright unless `--i-know-this-is-production` is also given. The local state file is archived to `.state/<site>.json.cleaned-<timestamp>` (0600, still encrypted with the same passphrase; the pinned secrets are your paper trail) and removed, so the next provision regenerates every secret and preflight's `refuse_existing` passes on a genuinely blank slate. Cleaning a half-built node (exactly what a failed provision leaves behind) is a supported case: every step is idempotent.
 
 ## Upgrading Authentik
 
@@ -783,7 +793,11 @@ Security posture, stated plainly:
 
 - The site config file contains **no secrets** and is safe to commit (git-ignored by default anyway, except the example).
 - SSH passwords, when used, are prompted at runtime and never stored.
-- Generated secrets currently live **in plaintext** inside the state file. That is acceptable for lab work and is flagged as a hard requirement to fix (age/sops encryption or OS keyring) before production use. Treat `.state/` accordingly: it is git-ignored, keep it that way.
+- Pinned values are **encrypted** in the state file (since 2.11.0): scrypt derives a key from a passphrase, AES-256-GCM seals the whole `generated` map. Only the site, the phase statuses and the *names* of the pinned values stay readable, so `akro status`, `shutdown`, `start` and `clean` need no passphrase. Nothing on disk can decrypt the file, so a copy of the working directory (a VM backup, a `clean` archive) gives away no secret. The blob is bound to its tool and site name: pasted into another site's file it fails to decrypt.
+- The passphrase comes from `AKRO_STATE_PASSPHRASE`, else `--passphrase-file FILE`, else a prompt. The first `provision` of a new site (or the first save of an old plaintext file) asks you to choose one, twice. Keep it in your password manager: a lost passphrase means re-pinning every secret by hand or rebuilding the site.
+- Old plaintext state files (2.10.x and earlier) still load. `akro status` flags them; `akro state encrypt CONFIG` (or the next `provision`) rewrites them encrypted. Delete any plain copies yourself (`.bak`, older `.cleaned-*` archives), and remember older backups keep the plaintext until they expire.
+- To change one pinned value (e.g. an SMTP password rotated upstream): `akro state set CONFIG KEY`, then replay the phase that renders it. Never hand-edit the file.
+- `.state/` is git-ignored; keep it that way.
 - Imported TLS private keys transit through workstation memory during validation and distribution; they are written only to `/opt/nginx/certs/privkey.pem` (0600) on the nodes.
 
 ## History
